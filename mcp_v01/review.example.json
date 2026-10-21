@@ -1,0 +1,9 @@
+{
+  "material_id": 1,
+  "field": "valid_until",
+  "value": "2027-08-30",
+  "actor": "请填写实际核验人",
+  "reason": "请填写人工查阅当前原件的确认依据；此样例不是核验授权",
+  "evidence_file_id": 9,
+  "evidence_sha256": "请从 get 输出复制当前 original 的完整 SHA256"
+}

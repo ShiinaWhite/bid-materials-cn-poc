@@ -1,0 +1,13 @@
+# Verified snapshot for this project on Python 3.13 / Windows.
+# The app core (PDF ingest via Umi-OCR, MCP, SQLite, WebUI pages, feedback)
+# runs on the Python standard library alone. These packages enable the
+# optional capabilities below and are required by the full test suite.
+#
+# Image materials (PNG/JPEG) ingest + image thumbnails + EXIF handling
+Pillow==12.3.0
+# PDF thumbnails, PDF native-text extraction, document enrichment, reextract
+PyMuPDF==1.28.2        # AGPL-3.0 OR Artifex commercial license — see README
+# XLSX native-text extraction
+openpyxl==3.1.5
+# Test fixture generation only (test_phase1 DOCX sample)
+python-docx==1.2.0

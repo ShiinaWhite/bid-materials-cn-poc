@@ -1,0 +1,13 @@
+{
+  "config_version": 1,
+  "repository_root": "../repository",
+  "db_path": "../repository/db/materials.db",
+  "dowse_exe": "../local/runtime/dowse/dowse.exe",
+  "index_dir": "../local/index/dowse-index",
+  "umi_exe": "../local/runtime/umi/Umi-OCR.exe",
+  "umi_url": "http://127.0.0.1:1224",
+  "state_dir": "../local/state",
+  "logs_dir": "../local/logs",
+  "backup_dir": "../local/backups",
+  "fixture_only": false
+}

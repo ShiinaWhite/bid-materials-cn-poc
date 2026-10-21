@@ -1,0 +1,59 @@
+# ===== runtime data (created by init / CLI / WebUI) =====
+/repository/
+/local/
+/runtime/
+/feedback/
+/runs/
+/data/
+/logs/
+
+# ===== databases =====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# ===== full-text index & derived OCR / search artifacts =====
+*.ocr.txt
+*.search.txt
+*.ocr.jsonl
+dowse-index/
+dowse-index-meta.json
+dowse-index-ocr-queue.json
+
+# ===== uploads / staging / web cache =====
+uploads/
+batch-staging/
+webui-cache/
+staging/
+
+# ===== real configuration & secrets (never commit) =====
+config/materials.json
+config/codex-mcp.toml
+.env
+.env.*
+*.pem
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== tests / tooling =====
+.pytest_cache/
+.coverage
+htmlcov/
+tmp/
+
+# ===== IDE / OS =====
+.idea/
+.vscode/
+*.swp
+*.bak
+Thumbs.db
+Desktop.ini
