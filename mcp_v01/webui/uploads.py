@@ -120,15 +120,14 @@ class UploadManager:
                 job.state = "running"
                 source = Path(staged_path)
                 suffix = source.suffix.lower() if source.suffix else Path(job.filename).suffix.lower()
+                if suffix not in catalog.UPLOAD_EXTS:
+                    raise ValueError(catalog.UPLOAD_FORMAT_ERROR)
                 # import_material copies to staging under a fixed name; give it the
                 # real extension by staging a hardlink-like renamed copy.
                 renamed = source.with_name(source.stem + suffix)
                 if renamed != source:
                     source.rename(renamed)
                     source = renamed
-                ext_ok = suffix in catalog.UPLOAD_EXTS
-                if not ext_ok:
-                    raise ValueError("暂不支持这种文件格式，请上传 PDF、图片、Word 或 Excel 文件")
                 job.step = "正在核对资料"
                 if job.mode == "import":
                     dup = find_duplicate_original(self.c, _sha(source))

@@ -547,8 +547,8 @@ def upload_page(config, params):
   <p class="muted">为 <a href="/material/{detail['material_id']}">{esc(name)}</a> 上传新的文件。
   旧文件会自动保留为历史文件，随时可以查看；之后请在新文件页面上核对其中的信息。</p>
   <div class="card"><form class="upload-form" data-mode="replace" data-material="{detail['material_id']}">
-    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF、图片、Word、Excel，单个文件不超过 200MB</div></div>
-      <input type="file" class="file-input" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.md,.aip"></div>
+    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
+      <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
     <label class="field"><span>经办人（必填）</span>
       <input class="input" name="actor" placeholder="例如：张三" required></label>
     <div class="upload-progress hidden"><div class="bar"><div class="bar-fill"></div></div><div class="progress-text muted small"></div></div>
@@ -563,8 +563,8 @@ def upload_page(config, params):
   <h1>上传资料</h1>
   <p class="muted">选择资料类别、填写名称后上传。系统会自动识别资料内容并保存；识别出的信息为“待完善”状态，请之后在资料页面上核对确认。</p>
   <div class="card"><form class="upload-form" data-mode="import">
-    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF、图片、Word、Excel，单个文件不超过 200MB</div></div>
-      <input type="file" class="file-input" accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.md,.aip"></div>
+    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
+      <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
     <label class="field"><span>资料类别（必选）</span>
       <select class="input" name="subtype" required><option value="">请选择类别…</option>{options}</select></label>
     <label class="field"><span>资料名称（必填，将显示在列表中）</span>

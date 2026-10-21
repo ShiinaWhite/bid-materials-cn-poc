@@ -27,7 +27,9 @@ python -B mcp_v01/webui_server.py --host 127.0.0.1 --port 8800
 | 状态 `/status` | 运行状态总览与深度体检（doctor）入口 |
 | 反馈 `/feedback` | 用户反馈提交与反馈记录查看 |
 
-支持的上传格式：PDF / PNG / JPEG。OCR 失败不会发布新文件版本，页面上会明确提示失败原因。
+普通上传和更新原件支持：**PDF / PNG / JPG / JPEG**，单文件不超过 200MB。DOCX / XLSX 暂不支持普通上传，`.doc` 明确不支持；文件选择器、API 和后台任务使用相同白名单。内部 PhaseOcr 的 Office 原生抽取能力保留，但不等于普通 import 支持 Office。完整 DOCX、大 PDF 与历史标书能力属于后续阶段。
+
+OCR 或数据库提交前失败不会发布新文件版本。提交后若索引/回复失败，已提交版本和审计回执会保留；请先查看资料及审计，不要把报错视为未写入。办公室操作说明见 [office-use.md](office-use.md)。
 
 ## 人工核验（review）
 
@@ -57,7 +59,13 @@ feedback/
 - 原件/缩略图服务前强制 SHA256 校验，磁盘内容与登记不一致立即拒绝展示并提示体检。
 - 上传体积与类型受限；静态资源与文件路由均做路径规范化，防目录穿越。
 - 默认仅回环绑定；Server 头不带敏感信息。
+- 所有 POST 在读取请求体和执行 handler 前统一校验：Host 必须是本机名/FQDN、localhost 或当前连接的本地 IP，且端口匹配监听端口；Origin 存在时必须是同一个 HTTP scheme/host/有效端口。不同域名/端口/协议、`null`、畸形或重复头返回 403 并关闭连接。
+- 无 Origin 的受控 HTTP 调用继续允许；`Sec-Fetch-Site: cross-site` 即使没有 Origin 也拒绝。浏览器正常使用相对 URL 发请求。CLI/批次工具走本地认证命名管道，不受 HTTP 检查影响。忽略 Forwarded/X-Forwarded-*；当前仅支持直连 HTTP，不配置反向代理信任。
+- manager 写失败后在操作锁内验证 DB integrity/FK/已登记文件哈希，修复投影并重建索引、恢复并检查 watch；成功后更新 generation 再清理 maintenance。恢复失败保留 `recovery_required` 原因，后续写入先恢复再执行，不会绕过故障继续写。
+- 旧 schema 的显式迁移重试会先独立验证 DB/外键/证据，在 maintenance 内执行原有迁移（保留迁移前备份）；普通业务写入不能绕过旧 schema 的维护状态。
 
 ## 与测试的关系
 
 `mcp_v01/test_feedback.py` 覆盖反馈解析、落盘、隔离保证（反馈绝不改动资料库），全部在临时目录运行，不触碰真实 `feedback/` 树。
+
+`mcp_v01/test_p05.py` 覆盖全部 POST 路由、同源/跨站/无 Origin、Office 边界、maintenance 恢复及真实 manager 失败注入。真实进程测试需要 dowse，可设置 `P05_DOWSE_EXE` 指向可用程序；测试会复制程序到临时目录，以独立 index/state/命名管道运行，不共享部署进程。

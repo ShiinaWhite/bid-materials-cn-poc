@@ -218,7 +218,8 @@ EXT_CONTENT_TYPES = {
 }
 
 OPENABLE_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
-UPLOAD_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".docx", ".xlsx", ".md", ".aip")
+UPLOAD_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
+UPLOAD_FORMAT_ERROR = "普通上传仅支持 PDF / PNG / JPG / JPEG；DOCX / XLSX 暂不支持，.doc 不支持。"
 
 STATUS_LABELS = {
     "unverified": ("在用", "chip-blue"),

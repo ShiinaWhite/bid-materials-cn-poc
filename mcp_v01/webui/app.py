@@ -24,6 +24,7 @@ from jty_materials.common import Config  # noqa: E402
 from webui import api, feedback, pages, service, thumbs, uploads  # noqa: E402
 from webui import render  # noqa: E402
 from webui import WEBUI_VERSION  # noqa: E402
+from webui.same_origin import post_allowed  # noqa: E402
 
 
 class Request:
@@ -266,6 +267,11 @@ class Handler(BaseHTTPRequestHandler):
                     elif message.startswith("RETRY"):
                         status, message = 503, "库在查询期间发生了变更，请刷新重试。"
                     response = html_response(render.error_page(message, hint), status=status)
+                if method == 'POST' and response.status >= 400:
+                    # Validation may reject before consuming an upload body.
+                    # Never interpret those remaining bytes as another request.
+                    self.close_connection = True
+                    response.headers['Connection'] = 'close'
                 self._send(response)
                 return
         if method == "GET":
@@ -277,6 +283,14 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("GET")
 
     def do_POST(self):
+        if not post_allowed(self):
+            # Do not parse/stage a rejected body, nor reuse its unread bytes as
+            # the next HTTP request on this connection.
+            self.close_connection = True
+            response = json_response(403, {"error": "禁止跨站写入请求，请从本资料库页面提交。"})
+            response.headers['Connection'] = 'close'
+            self._send(response)
+            return
         self._dispatch("POST")
 
     def _send(self, response):

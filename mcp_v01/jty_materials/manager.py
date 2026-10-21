@@ -4,12 +4,13 @@ import json
 from multiprocessing.connection import Client, Listener
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import time
 import traceback
 
-from .common import Config, FileLock, atomic_write, now, safe_path
+from .common import Config, FileLock, atomic_write, digest, now, safe_path
 from .dowse import Dowse
 from .workflow import import_material, review_fact, rebuild_projections
 from .backup import create_backup
@@ -73,8 +74,66 @@ class Supervisor:
         return {"running": True, "pid": os.getpid(), "watch_pid": self.d.watch.pid if self.d.watch else None,
                 "index": str(self.c.index_dir), "maintenance": self.c.maintenance_file.exists()}
 
+    def publish_generation(self):
+        generation = self.c.state_dir / "generation.json"
+        old = json.loads(generation.read_text()) if generation.exists() else 0
+        atomic_write(generation, json.dumps(old+1))
+
+    def validate_repository(self):
+        # Do not require the current schema here: an explicitly retried failed
+        # migration may still have the previous compatible schema after rollback.
+        from contextlib import closing
+        with closing(sqlite3.connect(self.c.db_path.as_uri() + '?mode=ro', uri=True)) as db:
+            db.execute('PRAGMA query_only=ON')
+            if [r[0] for r in db.execute('PRAGMA integrity_check')] != ['ok']:
+                raise RuntimeError('database integrity check failed')
+            if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                raise RuntimeError('database foreign key check failed')
+            for path, sha256 in db.execute('SELECT relative_path,sha256 FROM material_file'):
+                if digest(safe_path(self.c.repository_root, path)) != sha256:
+                    raise RuntimeError('registered evidence checksum mismatch')
+
+    def recover(self):
+        """Reconcile derivatives from committed DB state, never replay a write.
+
+        Called only while operation.lock and maintenance are held. Evidence or
+        DB damage, disk/index failures and unhealthy watch keep reads closed.
+        """
+        self.d.stop()
+        self.validate_repository()
+        rebuild_projections(self.c)
+        self.d.maintain('index', self.c.materials)
+        self.d.health()
+        self.publish_generation()
+
+    def recover_or_retain(self, action, error):
+        try:
+            self.recover()
+            self.c.maintenance_file.unlink()
+        except Exception as recovery_error:
+            atomic_write(self.c.maintenance_file, json.dumps({
+                'action': action, 'at': now(), 'pid': os.getpid(),
+                'state': 'recovery_required', 'error': str(error),
+                'recovery_error': str(recovery_error)}))
+            self.c.log('manager.recovery_failed', action=action,
+                       error=str(recovery_error), traceback=traceback.format_exc())
+            return False
+        self.c.log('manager.operation_recovered', action=action)
+        return True
+
     def job(self, action, payload):
         with FileLock(self.c.repository_root / "db/operation.lock"):
+            resuming_migration = False
+            # A previous failed recovery must be reconciled before any new write.
+            if self.c.maintenance_file.exists():
+                if action in ('migrate-v03', 'migrate-v04'):
+                    # The migration itself is the explicit repair for an older
+                    # schema. Check evidence/DB first; it keeps maintenance until
+                    # successful completion, just like every other job.
+                    self.validate_repository()
+                    resuming_migration = True
+                elif not self.recover_or_retain(action, 'previous maintenance requires recovery'):
+                    raise RuntimeError('MAINTENANCE: recovery required; inspect manager events')
             atomic_write(self.c.maintenance_file, json.dumps({"action": action, "at": now(), "pid": os.getpid()}))
             try:
                 self.d.stop()
@@ -89,6 +148,8 @@ class Supervisor:
                 elif action in ('migrate-v03','migrate-v04'):
                     from .store import Store
                     result=Store.migrate(self.c)
+                    if resuming_migration:
+                        self.recover()
                 elif action=='phase_import':
                     from .phase_ocr import PhaseOcr
                     if self.phase_ocr is None:self.phase_ocr=PhaseOcr(self.c)
@@ -96,6 +157,7 @@ class Supervisor:
                     if not 1<=len(rows)<=5:raise ValueError('phase commit group limited to 1..5')
                     result=[]
                     for row in rows:
+                        row = dict(row)  # keep approved retry payload intact
                         try:
                             expected=row.pop('expected_source_sha256')
                             from .common import digest
@@ -104,6 +166,7 @@ class Supervisor:
                             receipt=import_material(self.c,**row,ocr_factory=lambda _:self.phase_ocr,defer_projection=True)
                             result.append(dict(ok=True,item_id=row['batch_context']['item_id'],receipt=receipt))
                         except Exception as error:
+                            self.c.log('manager.item_failed', action=action, error=str(error))
                             result.append(dict(ok=False,item_id=row['batch_context']['item_id'],error=type(error).__name__+': '+str(error)))
                     rebuild_projections(self.c);self.d.maintain('index',self.c.materials)
                 elif action=='phase_end':
@@ -132,7 +195,9 @@ class Supervisor:
                         result=[]
                         for row in rows:
                             try:result.append(dict(ok=True,material_id=row['material_id'],receipt=reextract(self.c,row,ocr_factory=lambda _:self.phase_ocr,defer_projection=True)))
-                            except Exception as e:result.append(dict(ok=False,material_id=row['material_id'],error=type(e).__name__+': '+str(e)))
+                            except Exception as e:
+                                self.c.log('manager.item_failed', action=action, error=str(e))
+                                result.append(dict(ok=False,material_id=row['material_id'],error=type(e).__name__+': '+str(e)))
                     rebuild_projections(self.c);self.d.maintain('index',self.c.materials)
                 elif action=='candidates':
                     from .candidates import append_candidates
@@ -151,21 +216,13 @@ class Supervisor:
                     raise ValueError("unknown offline action")
                 if self.d.watch is None and (self.c.index_dir / "meta.json").exists():
                     self.d.start()
-                generation = self.c.state_dir / "generation.json"
-                old = json.loads(generation.read_text()) if generation.exists() else 0
-                atomic_write(generation, json.dumps(old+1))
+                self.publish_generation()
                 self.c.maintenance_file.unlink()
                 self.c.log("manager.operation_complete", action=action)
                 return result
             except Exception as error:
                 self.c.log("manager.operation_failed", action=action, error=str(error), traceback=traceback.format_exc())
-                try:
-                    if self.d.watch is None and (self.c.index_dir / "meta.json").exists():
-                        self.d.start()
-                except Exception as restart_error:
-                    self.c.log("manager.restart_failed", error=str(restart_error))
-                if action in ("review", "backup"):
-                    self.c.maintenance_file.unlink(missing_ok=True)
+                self.recover_or_retain(action, error)
                 raise
 
     def dispatch(self, action, payload):

@@ -47,6 +47,8 @@ class Api:
         if mode not in ("import", "replace"):
             return 400, {"error": "上传模式无效"}
         filename = re.split(r"[\\/]", q.get("filename", ""))[-1].strip() or "upload"
+        if Path(filename).suffix.lower() not in pages.catalog.UPLOAD_EXTS:
+            return 400, {"error": pages.catalog.UPLOAD_FORMAT_ERROR}
         actor = (q.get("actor") or "").strip()
         subtype = (q.get("subtype") or "").strip()
         title = (q.get("title") or "").strip()

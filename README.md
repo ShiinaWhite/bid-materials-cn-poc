@@ -14,7 +14,7 @@
 - **结构化事实层**：SQLite 事实库，字段为封闭业务词汇（营业执照、安全生产许可证、承装修试、建筑业资质、ISO、合同业绩、人员、审计/财务等）；OCR 候选值与人工核验值严格分级，只有人工核验过的事实才作为已核验事实返回
 - **全文检索**：dowse（Tantivy + jieba）本地索引，MCP `search_materials` 做 SQLite 过滤 + 中文相关度排序
 - **只读 MCP**：stdio JSON-RPC，三个工具 `search_materials` / `get_material` / `get_material_text`，无任何写入工具
-- **WebUI**：本地浏览器界面，覆盖浏览、检索、上传入库、人工核验、运行状态体检与用户反馈
+- **WebUI**：本地浏览器界面，覆盖浏览、检索、上传入库（PDF / PNG / JPG / JPEG）、人工核验、运行状态体检与用户反馈
 - **批次入库**：离线批次计划 + 逐项回执，支持中断恢复，不提供批量写入 MCP
 - **备份恢复**：带完成标记与哈希清单的一致性备份；索引与运行态可随时重建
 
@@ -54,7 +54,7 @@
 |---|---|---|---|
 | Pillow | PNG/JPEG 材料入库（EXIF 摆正）、图片缩略图 | 图片材料无法入库/无缩略图；PDF 材料入库不受影响 | MIT-CMU |
 | PyMuPDF | PDF 缩略图、PDF 原生文本抽取（native text）、文档富化 enrich、reextract | WebUI 缺 PDF 缩略图；上述命令返回明确错误，系统其余功能不受影响 | **AGPL-3.0 或 Artifex 商业许可（双许可）** |
-| openpyxl | XLSX 原生文本抽取 | 仅 XLSX 抽取不可用 | MIT |
+| openpyxl | 内部 PhaseOcr 的 XLSX 原生文本抽取（普通 WebUI 上传暂不支持） | 仅 XLSX 抽取不可用 | MIT |
 | python-docx | 仅测试夹具生成（test_phase1） | 不影响任何运行功能 | MIT |
 
 降级是代码内建行为：WebUI 缩略图在缺包时自动跳过并记日志；缺包时的写入类命令经管理进程统一返回错误，不会中断服务。
@@ -120,6 +120,10 @@ python -B mcp_v01/cli.py shutdown       # 停止管理进程
 - 运行状态与深度体检（doctor）：库完整性、文件哈希、索引与运行时健康
 - 用户反馈：右下角反馈入口；反馈数据默认保存在项目根 `feedback/`，**不属于资料库 repository**，首次使用时自动创建
 
+普通 WebUI 上传和更新原件仅支持 **PDF / PNG / JPG / JPEG**（单文件不超过 200MB）。DOCX / XLSX 暂不支持普通上传，`.doc` 不支持；内部 PhaseOcr 的部分 Office 原生抽取能力不代表普通入库已支持 Office。完整 DOCX、大 PDF 与历史标书能力留待后续阶段。
+
+办公室使用步骤与失败后的处理见 [办公室使用说明](docs/office-use.md)。
+
 ## 分层原则：原件 / OCR / 结构化事实 / MCP
 
 1. **原件**是唯一权威：只复制、永不修改或转换；每个文件登记 SHA256，不一致立即拒绝展示
@@ -130,6 +134,7 @@ python -B mcp_v01/cli.py shutdown       # 停止管理进程
 ## 数据安全原则
 
 - 默认只绑定 `127.0.0.1`；如需局域网访问请自行评估网络边界后修改绑定
+- 所有浏览器 POST 校验直连 Host 与同源 Origin；跨站写入返回 403。本机、电脑名、当前 LAN IP 的同源访问均可；无 Origin 的受控调用保留兼容。此机制不提供登录或用户权限，反向代理不在当前支持范围。
 - 一切写入集中在离线 CLI / WebUI → 管理进程串行 RPC；管理通道经认证的本地命名管道
 - 全部写操作进入追加式审计台账；SQLite 触发器兜底拦截越权 SQL 写入
 - `config/materials.json`、`repository/`、`local/`、`feedback/`、运行日志与缓存均已列入 `.gitignore`，真实业务数据与真实配置不应进入任何 Git 仓库
