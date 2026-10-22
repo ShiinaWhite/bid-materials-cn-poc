@@ -110,7 +110,7 @@ python -B mcp_v01/cli.py watch status
 python -B mcp_v01/cli.py shutdown       # 停止管理进程
 ```
 
-## WebUI 当前功能（v0.4.2）
+## WebUI 当前功能（v0.4.3）
 
 - 首页与目录：关键词检索、按类型/状态过滤浏览
 - 材料详情：分版本查看原件（SHA256 校验通过才允许展示）、缩略图懒加载、OCR 文本按页查看
@@ -119,6 +119,7 @@ python -B mcp_v01/cli.py shutdown       # 停止管理进程
 - 人工核验：对照原件在 Web 端提交核验记录（证据绑定文件 + SHA256）
 - 运行状态与深度体检（doctor）：库完整性、文件哈希、索引与运行时健康
 - 用户反馈：右下角反馈入口；反馈数据默认保存在项目根 `feedback/`，**不属于资料库 repository**，首次使用时自动创建
+- 移动端自适应：手机上目录页为卡片式列表 + 可展开筛选面板，上传/反馈支持拍照辅助入口（同一 API 与白名单），桌面界面不变
 
 普通 WebUI 上传和更新原件仅支持 **PDF / PNG / JPG / JPEG**（单文件不超过 200MB）。DOCX / XLSX 暂不支持普通上传，`.doc` 不支持；内部 PhaseOcr 的部分 Office 原生抽取能力不代表普通入库已支持 Office。完整 DOCX、大 PDF 与历史标书能力留待后续阶段。
 

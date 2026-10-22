@@ -159,7 +159,9 @@ def fact_legend_compact():
 
 def feedback_widget():
     """Low-interference corner entry (v0.4.2): a fixed button plus one shared
-    dialog. Wire-up lives in app.js; present on every page."""
+    dialog. Wire-up lives in app.js; present on every page. Mobile gets its
+    own gentler hint wording and an optional camera capture entry (v0.4.3);
+    desktop drag/Ctrl+V behaviour is unchanged."""
     return f"""
 <button id="feedback-fab" type="button" class="feedback-fab" title="提交使用问题或建议">{icon("bulb")}<span>反馈</span></button>
 <dialog id="feedback-dialog" class="dialog feedback-dialog">
@@ -171,8 +173,10 @@ def feedback_widget():
         placeholder="例如：这里的有效期显示好像不对。"></textarea></label>
     <div class="field"><span>截图（可选，PNG / JPG / WEBP，最多 5 张，每张不超过 20MB）</span>
       <div class="dropzone fb-drop" tabindex="0">{icon("upload", 22)}
-        <div><strong>点击选择截图</strong><div class="muted small">或拖拽图片到这里，也可以直接 Ctrl+V 粘贴</div></div>
+        <div><strong>点击选择截图</strong><div class="muted small fb-hint"><span class="fb-hint-desktop">或拖拽图片到这里，也可以直接 Ctrl+V 粘贴</span><span class="fb-hint-mobile">或选择相册里的照片或截图</span></div></div>
         <input type="file" class="file-input" multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></div>
+      <div class="camera-entry"><button type="button" class="btn fb-camera-btn">{icon("upload", 16)} 拍照附图</button>
+        <input type="file" class="file-input fb-camera-input" accept="image/jpeg,image/png,image/webp" capture="environment"></div>
       <div class="fb-files"></div>
     </div>
     <label class="field"><span>经办人（可选）</span>
@@ -210,6 +214,7 @@ def layout(title, content, active="", q="", sys_ok=True, hide_search=False):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff">
 <title>{esc(title)} · 投标素材库</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">

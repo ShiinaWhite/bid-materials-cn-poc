@@ -51,6 +51,13 @@ function initUploadForm(form) {
   drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
   drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("drag"); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
   fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+  // phone-only camera assist: same form state, same upload path
+  const cameraBtn = $(".camera-btn", form);
+  const cameraInput = $(".camera-input", form);
+  if (cameraBtn && cameraInput) {
+    cameraBtn.addEventListener("click", () => cameraInput.click());
+    cameraInput.addEventListener("change", () => setFile(cameraInput.files[0]));
+  }
 
   const actorInput = form.querySelector('input[name="actor"]');
   if (actorInput) {
@@ -495,6 +502,13 @@ function initFeedback() {
     addFiles(e.dataTransfer.files);
   });
   fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
+  // phone-only camera assist: same validation/limit path as picked files
+  const cameraBtn = $(".fb-camera-btn", dlg);
+  const cameraInput = $(".fb-camera-input", dlg);
+  if (cameraBtn && cameraInput) {
+    cameraBtn.addEventListener("click", () => cameraInput.click());
+    cameraInput.addEventListener("change", () => { addFiles(cameraInput.files); cameraInput.value = ""; });
+  }
 
   // Ctrl+V paste works anywhere while the dialog is open
   document.addEventListener("paste", (e) => {

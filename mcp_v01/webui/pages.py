@@ -243,6 +243,44 @@ def _column_cell(col, m):
     return ""
 
 
+def _card_fields(cols, m):
+    """Mobile card: the 1-2 business fields that matter most in this scope.
+    Values reuse the exact desktop column cells, so formatting never forks;
+    the type is already the card's badge, so that column is not repeated."""
+    parts = []
+    for col in cols:
+        if col in ("name", "status", "type") or len(parts) >= 2:
+            continue
+        cell = _column_cell(col, m)
+        if not cell.strip() or cell.strip() == '<span class="muted">—</span>':
+            continue
+        label = catalog.COLUMN_HEADERS.get(col, col)
+        parts.append(f'<div class="m-field"><span class="m-field-label">{esc(label)}</span>'
+                     f'<span class="m-field-value">{cell}</span></div>')
+    return "".join(parts)
+
+
+def _mobile_cards(cols, items):
+    """Card list for phones, rendered server-side next to the desktop table
+    (media queries decide which one is visible). No client-side rebuilding."""
+    if not items:
+        return ""
+    cards = []
+    for m in items:
+        mid = m["material_id"]
+        name = m.get("display") or m["title"]
+        action = _row_action(m)
+        foot = action or f'<a class="btn btn-sm" href="/material/{mid}">查看详情</a>'
+        fields = _card_fields(cols, m)
+        cards.append(f"""<div class="m-card" role="listitem">
+      <div class="m-card-head">{render.type_badge(m["material_type"])}<span class="m-card-status">{render.status_chips(m)}</span></div>
+      <a class="m-card-name" href="/material/{mid}">{esc(name)}</a>
+      {f'<div class="m-card-fields">{fields}</div>' if fields else ''}
+      <div class="m-card-foot">{foot}</div>
+    </div>""")
+    return f'<div class="m-cards" role="list">{"".join(cards)}</div>'
+
+
 def browse(config, params):
     q = (params.get("q") or "").strip()
     person = (params.get("person") or "").strip()
@@ -269,15 +307,16 @@ def browse(config, params):
         scope_note = f"{catalog.GROUP_LABEL.get(group, group)} · 共 {result['total']} 项"
     else:
         scope_note = f"全部资料 · 共 {result['total']} 项"
-    sidebar = [f'<a class="side-item {"active" if not group and not type_code else ""}" href="{render.build_url("/browse", q=q)}">全部资料 <span>{total_all}</span></a>']
+    sidebar_items = [f'<a class="side-item {"active" if not group and not type_code else ""}" href="{render.build_url("/browse", q=q)}">全部资料 <span>{total_all}</span></a>']
     for g in catalog.GROUPS:
         active_group = group == g["key"] and not type_code
-        sidebar.append(f'<a class="side-item {"active" if active_group else ""}" '
-                       f'href="{render.build_url("/browse", group=g["key"], q=q)}">{esc(g["label"])} <span>{groups_count[g["key"]]}</span></a>')
+        sidebar_items.append(f'<a class="side-item {"active" if active_group else ""}" '
+                             f'href="{render.build_url("/browse", group=g["key"], q=q)}">{esc(g["label"])} <span>{groups_count[g["key"]]}</span></a>')
         if active_group:
             for t in g["types"]:
-                sidebar.append(f'<a class="side-item sub {"active" if type_code == t else ""}" '
-                               f'href="{render.build_url("/browse", type=t, q=q)}">{esc(catalog.TYPE_LABELS.get(t, t))} <span>{counts.get(t, 0)}</span></a>')
+                sidebar_items.append(f'<a class="side-item sub {"active" if type_code == t else ""}" '
+                                     f'href="{render.build_url("/browse", type=t, q=q)}">{esc(catalog.TYPE_LABELS.get(t, t))} <span>{counts.get(t, 0)}</span></a>')
+    sidebar_html = "".join(sidebar_items)
     cols, headers = _scope_columns(group, type_code)
     rows = []
     for m in result["items"]:
@@ -296,6 +335,7 @@ def browse(config, params):
         table = f"""<table class="table list-table">
           <thead><tr>{head}</tr></thead>
           <tbody>{''.join(rows)}</tbody></table>"""
+    cards_html = _mobile_cards(cols, result["items"])
     person_filter = f"""<input class="input" type="search" name="person" value="{esc(person)}" placeholder="按人员姓名筛选">""" \
         if (group == "person" or person) else ""
     # the validity filter only makes sense for types that have that concept
@@ -306,7 +346,7 @@ def browse(config, params):
         <option value="expiring" {"selected" if validity == "expiring" else ""}>90 天内到期</option>
         <option value="expired" {"selected" if validity == "expired" else ""}>已过期</option>
       </select>""" if validity_applies else ""
-    toolbar = f"""<form class="toolbar" method="get" action="/browse">
+    toolbar_html = f"""<form class="toolbar" method="get" action="/browse">
       <input type="hidden" name="group" value="{esc(group or '')}">
       <input type="hidden" name="type" value="{esc(type_code or '')}">
       <input class="input grow" type="search" name="q" value="{esc(q)}" placeholder="在当前范围内搜索…">
@@ -318,16 +358,44 @@ def browse(config, params):
       </select>
       <button class="btn" type="submit">筛选</button>
     </form>"""
-    content = f"""<div class="browse-layout">
-  <aside class="sidebar">{''.join(sidebar)}</aside>
+    # phone-only collapsible filter/category panel: same links and the same
+    # GET form as the desktop sidebar/toolbar, so URL semantics never fork
+    state_bits = []
+    if q:
+        state_bits.append(f"“{q}”")
+    if person:
+        state_bits.append(f"人员 {person}")
+    if validity == "expiring":
+        state_bits.append("90 天内到期")
+    elif validity == "expired":
+        state_bits.append("已过期")
+    scope_label = (catalog.TYPE_LABELS.get(type_code) if type_code
+                   else catalog.GROUP_LABEL.get(group, "全部分类") if group else "全部分类")
+    filter_state = scope_label + (" · " + " · ".join(state_bits) if state_bits else "")
+    clear_html = '<a class="m-filter-clear" href="/browse">清除全部筛选</a>' \
+        if (q or person or validity or group or type_code) else ""
+    mobile_panel = f"""<details class="m-filter">
+      <summary class="m-filter-summary">{icon('search', 18)}<span class="m-filter-title">筛选与分类</span>
+        <span class="m-filter-state">{esc(filter_state)}</span><span class="m-filter-caret" aria-hidden="true"></span></summary>
+      <div class="m-filter-body">
+        <div class="m-filter-cats">{sidebar_html}</div>
+        {toolbar_html}
+        {clear_html}
+      </div>
+    </details>"""
+    pagebar = render.pagination(render.build_url('/browse', q=q, group=group, type=type_code, person=person, validity=validity, order=order),
+                                result['page'], result['pages'], result['total'])
+    content = f"""{mobile_panel}
+{cards_html}
+<div class="browse-layout">
+  <aside class="sidebar">{sidebar_html}</aside>
   <section class="browse-main">
     <div class="browse-head"><h1>{scope_note}</h1></div>
-    {toolbar}
+    {toolbar_html}
     {table}
-    {render.pagination(render.build_url('/browse', q=q, group=group, type=type_code, person=person, validity=validity, order=order),
-                       result['page'], result['pages'], result['total'])}
   </section>
-</div>"""
+</div>
+{pagebar}"""
     return render.layout("资料分类", content, active="browse", q=q, sys_ok=service.system_ok(config))
 
 
@@ -527,6 +595,15 @@ def material_page(config, material_id):
     return render.layout(name[:40], content, active="browse", sys_ok=service.system_ok(config))
 
 
+def _camera_entry():
+    """Optional phone assist: capture a photo with the camera app. Purely a
+    front-end file-picker variant — the file still goes through the same
+    /api/upload with the same extension whitelist and size cap."""
+    return (f'<div class="camera-entry"><button type="button" class="btn camera-btn">'
+            f'{icon("upload", 18)} 拍照上传</button>'
+            f'<input type="file" class="file-input camera-input" accept="image/jpeg,image/png" capture="environment"></div>')
+
+
 def upload_page(config, params):
     replace_mid = params.get("material")
     options = ""
@@ -549,6 +626,7 @@ def upload_page(config, params):
   <div class="card"><form class="upload-form" data-mode="replace" data-material="{detail['material_id']}">
     <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
       <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
+    {_camera_entry()}
     <label class="field"><span>经办人（必填）</span>
       <input class="input" name="actor" placeholder="例如：张三" required></label>
     <div class="upload-progress hidden"><div class="bar"><div class="bar-fill"></div></div><div class="progress-text muted small"></div></div>
@@ -565,6 +643,7 @@ def upload_page(config, params):
   <div class="card"><form class="upload-form" data-mode="import">
     <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
       <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
+    {_camera_entry()}
     <label class="field"><span>资料类别（必选）</span>
       <select class="input" name="subtype" required><option value="">请选择类别…</option>{options}</select></label>
     <label class="field"><span>资料名称（必填，将显示在列表中）</span>
