@@ -2,8 +2,8 @@
 
 日期：2026-10-22 ｜ 分支：`mobile-ux`（基于 origin/main `e471f73`）｜ 状态：**开发完成，待 review**
 
-按约定：未 merge main、未部署生产、未改动 `D:\workSpace\bid-materials-cn-poc` 生产工作区。
-开发全程在独立 worktree `D:\workSpace\bmc-mobile`，所有临时测试目录位于 `<worktree>\runs\`，未向任何盘根写入临时目录。
+按约定：未 merge main、未部署生产、未改动生产工作区。
+开发全程在独立 worktree（项目外的短路径目录，下称 `<worktree>`），所有临时测试目录位于 `<worktree>\runs\`，未向任何盘根写入临时目录。
 
 ---
 
@@ -11,15 +11,18 @@
 
 | 文件 | 改动 |
 |---|---|
-| `mcp_v01/webui/pages.py` | +103/-16：browse 页服务端同时渲染桌面表格与手机卡片/筛选面板；上传页新增拍照辅助入口 |
-| `mcp_v01/webui/static/style.css` | +142/-3：640px 手机断点全套、dialog 限高与降级、FAB safe-area、触控尺寸 |
-| `mcp_v01/webui/render.py` | +7/-2：反馈对话框手机提示文案切换 + 拍照附图入口；theme-color meta |
-| `mcp_v01/webui/static/app.js` | +12/-0：两处拍照输入接线（上传表单、反馈对话框），无其他 JS 改动 |
-| `mcp_v01/webui/__init__.py` | `WEBUI_VERSION` 0.4.2 → **0.4.3** |
-| `mcp_v01/test_mobile_ui.py` | **新增** 10 个移动端 UI 测试 |
-| `README.md`、`docs/webui.md` | 版本号与移动端适配说明 |
+| `mcp_v01/webui/pages.py` | +91/−12：browse 页服务端同时渲染桌面表格与手机卡片/筛选面板；上传页新增拍照辅助入口 |
+| `mcp_v01/webui/static/style.css` | +143/−2：640px 手机断点全套、dialog 限高与降级、FAB safe-area、触控尺寸 |
+| `mcp_v01/webui/render.py` | +7/−2：反馈对话框手机提示文案切换 + 拍照附图入口；theme-color meta |
+| `mcp_v01/webui/static/app.js` | +14/−0：两处拍照输入接线（上传表单、反馈对话框），无其他 JS 改动 |
+| `mcp_v01/webui/__init__.py` | +1/−1：`WEBUI_VERSION` 0.4.2 → **0.4.3** |
+| `mcp_v01/test_mobile_ui.py` | **新增** +219/−0：10 个移动端 UI 测试 |
+| `README.md` +2/−1、`docs/webui.md` +13/−2 | 版本号与移动端适配说明 |
+| `MOBILE_UX_REPORT.md` | +107/−0：本报告 |
 
-合计 7 文件修改 + 1 文件新增，+271 / -20 行。**无新增第三方依赖，无数据库/schema 改动，无后端语义变化。**
+Git 权威统计（`git diff --numstat origin/main...HEAD`，merge-base＝origin/main＝`e471f73`）：
+**9 files changed，+600 / −20**。其中产品源码 5 文件 +256/−17、文档 2 文件 +15/−3、新增测试 +219/0、本报告 +110/−0（净额，含 review gate 的 docs 修正 commit）。
+`runs/` 全部临时产物已 gitignore，不计入源码改动。**无新增第三方依赖，无数据库/schema 改动，无后端语义变化。**
 
 ## 2. 手机端改了什么
 
@@ -59,11 +62,11 @@
 
 - 1365×900 实测：导航不变形、表格/侧栏/工具栏原样（截图 `1365x900-browse.png` 等）；手机组件（卡片/筛选面板/拍照入口）在桌面全部隐藏。
 - 桌面拖拽上传、Ctrl+V 粘贴反馈、点击区域、对话框宽度均未改动。
-- **P0.5 POST 同源保护保持**：`test_mobile_ui` 直接断言 POST 路由集合与 `do_POST` 中的 `post_allowed` 检查；`test_p05` 32 项全部通过。
+- **P0.5 POST 同源保护保持**：`test_mobile_ui` 直接断言 POST 路由集合与 `do_POST` 中的 `post_allowed` 检查；`test_p05` 21 项（含真实进程回归）全部通过。
 - **Office 上传边界保持**：accept 仍只有 `.pdf,.png,.jpg,.jpeg`，错误文案原样（`test_p05.OfficeTests` + mobile 测试双重断言）。
 - upload/review/feedback API 无语义变化；原件 SHA256 校验链路未触碰；无 schema 改动。
 
-## 4. 各 viewport QA（真实 Chrome + Playwright，系统 Chrome channel）
+## 4. 各 viewport QA（Playwright + 系统 Chrome channel，移动端 viewport / touch 模拟）
 
 视口：360×800、390×844、430×932（is_mobile+touch）、768×1024、1365×900。
 页面：首页、/browse、/browse?q=安全生产、material 详情（PDF 与 PNG 各一）、/upload、feedback 对话框、review 对话框。
@@ -81,27 +84,27 @@
 
 **合计 255/255 通过**（明细 `runs/mobile-ux/qa-results.json`，截图 45 张 `runs/mobile-ux/shots/`）。
 
-### 真实流程（390×844 手机视口，真机 Chrome 行为）
-- 上传：真实 `/api/upload` POST + 后台任务轮询 + 结果框显示 ✅（用同 SHA 的已入库 PDF 走"重复防重"快速路径；fixture 环境的冷启动 Umi-OCR 进程收尾不干净会令完整 OCR 入库回滚——这是该开发机二次实例的环境问题，OCR 链路由 116 项单元测试覆盖，生产常驻 Umi 不受影响）
+### 交互流程（390×844 移动 viewport + touch 模拟；非物理手机）
+- 上传：`/api/upload` POST + 后台任务轮询 + 结果 UI 实际通过 ✅（用同 SHA 的已入库 PDF 走"重复防重"快速路径）。**本轮没有完成一次新的真实 OCR material 入库**：fixture 环境冷启动的 Umi-OCR 进程收尾不干净会令完整 OCR 入库回滚（回滚机制本身工作正常），属开发机二次实例的环境问题；完整 OCR 后端能力由既有 P0.5 manager/dowse 综合测试提供证据，生产常驻 Umi 不受影响。本轮未为此改动任何产品逻辑。
 - 反馈：带图片附件真实提交成功，返回反馈编号 ✅
 - 人工核验：review 对话框真实提交 `/api/review` 成功并重载 ✅
 
 ## 5. 新增测试与回归数量
 
 - 新增 `mcp_v01/test_mobile_ui.py`：**10 个测试**，覆盖：viewport meta、mobile 卡片/筛选面板 HTML、桌面表格共存、各 scope 卡片字段、上传 accept 白名单 + 拍照入口（import/replace 两种模式）、feedback accept/提示文案/拍照入口、CSS 断点与 dvh/safe-area 降级、JS 无客户端重建列表、P0.5 POST 路由与 `post_allowed` 保持、页面不暴露 material_id/SHA256/OCR/MCP/候选 等内部术语。无 skip。
-- 完整套件（最终代码树）：**116 tests OK**（106 基线 + 10 新增；1 个 skip 为 P0.5 需真实 dowse 进程的可选回归，与基线一致）。
-- 定向：`test_p05 + test_feedback` 32 项 OK。
+- 完整套件（最终代码树，显式 `P05_DOWSE_EXE` 指向实际 dowse.exe，真实 manager/dowse 综合测试实际执行）：**116 ran / failures 0 / errors 0 / skipped 0**（106 基线 + 10 新增；P0.5 真实进程回归不再 skip）。
+- 定向回归（同一 `P05_DOWSE_EXE`）：`test_mobile_ui + test_p05 + test_feedback` 共 **42 ran / failures 0 / errors 0 / skipped 0**（322.6s，其中 P0.5 真实命名管道 manager 失败注入/回执重放综合测试实际执行）。
 
 ## 6. 其他声明
 
 - **新增依赖：无**（Playwright 仅为本机 QA 工具，用户级 pip 安装，不进入仓库/requirements/运行时）。
 - **后端语义变化：无**。所有写路径仍走同一 manager RPC；`same_origin.py`、`api.py`、`uploads.py` 零改动。
-- 临时产物全部在 `bmc-mobile/runs/`（gitignore 覆盖），未进 Git；QA 种子库使用独立副本的 dowse.exe 与独立 Umi 端口，**生产 runtime/manager/WebUI 全程未被触碰**。
+- 临时产物全部在 `<worktree>/runs/`（gitignore 覆盖），未进 Git；QA 种子库使用独立副本的 dowse.exe 与独立 Umi 端口，**生产 runtime/manager/WebUI 全程未被触碰**。
 - ROADMAP.md 位于生产工作区，按约定本轮未修改；建议 review 通过并部署后再勾选"移动端 UX 收尾"。
 
 ## 7. 分支与交付
 
 - 分支：`mobile-ux`，基于 `origin/main` `e471f7387604e67db310551e694ebe003b4bb58b`
-- 变更：7 文件修改 + 1 新增，+271/−20（`git diff --stat` 见 §1）
+- 变更：9 files changed，+600 / −20（`git diff --stat origin/main...HEAD`，见 §1）
 - **是否适合进入 review：是**
-- **PHYSICAL_MOBILE_ACCEPTANCE = PARTIAL** —— 真机验收待本分支 review 通过、部署到 LAN 后由用户用物理手机完成（首页搜索 → 分类/筛选 → 详情 → 查看原件 → 下载 → 上传页调出文件/相册/拍照选择器 → 带图反馈）。
+- **PHYSICAL_MOBILE_ACCEPTANCE = PARTIAL** —— 物理手机验收待本分支 review 通过、部署到 LAN 后由用户本人用物理手机完成（首页搜索 → 分类/筛选 → 详情 → 查看原件 → 下载 → 上传页调出文件/相册/拍照选择器 → 带图反馈）。上文的 Playwright 检查属于移动端 viewport / touch 模拟浏览器 QA，不等价于物理手机验收。
