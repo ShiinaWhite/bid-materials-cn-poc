@@ -400,6 +400,7 @@ def browse(config, params):
 
 
 def material_page(config, material_id):
+    from . import projects as project_pages
     try:
         detail = Query(config).get_material(material_id)
     except ValueError:
@@ -588,6 +589,7 @@ def material_page(config, material_id):
     {blocks_card}
     {person_section}
     {relation_section}
+    {project_pages.reverse_section(config, mid)}
     {history_card}
   </div>
 </div>

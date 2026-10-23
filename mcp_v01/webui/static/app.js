@@ -4,6 +4,67 @@
 function $(sel, root) { return (root || document).querySelector(sel); }
 function $all(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
 
+/* Project files use their own endpoint and job registry, without OCR/import. */
+document.addEventListener("DOMContentLoaded", () => {
+  for (const form of document.querySelectorAll(".project-action")) {
+    const fileInput = form.querySelector('input[type="file"]');
+    const drop = form.querySelector(".project-drop");
+    if (drop && fileInput) {
+      drop.addEventListener("dragover", event => { event.preventDefault(); drop.classList.add("dragging"); });
+      drop.addEventListener("dragleave", () => drop.classList.remove("dragging"));
+      drop.addEventListener("drop", event => {
+        event.preventDefault(); drop.classList.remove("dragging");
+        if (event.dataTransfer.files.length === 1) fileInput.files = event.dataTransfer.files;
+      });
+    }
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const error = form.querySelector(".project-error");
+      const button = form.querySelector('button[type="submit"]');
+      const label = button.textContent;
+      error.textContent = "";
+      button.disabled = true;
+      try {
+        const fields = Object.fromEntries(new FormData(form));
+        let response;
+        if (form.dataset.action === "project.file.add") {
+          const file = fileInput.files[0];
+          if (!file || file.size === 0 || file.size > 200 * 1024 * 1024) throw new Error("请选择非空文件，单文件最大 200MB");
+          delete fields.file;
+          fields.filename = file.name;
+          button.textContent = "正在上传…";
+          response = await fetch("/api/project/file?" + new URLSearchParams(fields), {method: "POST", body: file});
+          const received = await response.json();
+          if (!response.ok) throw new Error(received.error || "上传失败");
+          button.textContent = "正在保存…";
+          for (;;) {
+            await new Promise(resolve => setTimeout(resolve, 700));
+            const poll = await fetch("/api/project/jobs/" + received.job_id);
+            const job = await poll.json();
+            if (!poll.ok || job.state === "error") throw new Error(job.error || "上传任务读取失败");
+            if (job.state === "done") {
+              window.location.assign("/project/" + job.result.project_id);
+              return;
+            }
+          }
+        } else {
+          const action = form.dataset.action.slice("project.".length).replaceAll(".", "/");
+          response = await fetch("/api/project/" + action, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(fields)
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "保存失败");
+          window.location.assign(result.redirect);
+        }
+      } catch (failure) {
+        error.textContent = failure.message;
+        button.disabled = false;
+        button.textContent = label;
+      }
+    });
+  }
+});
+
 function el(tag, attrs, children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -381,7 +442,7 @@ function initDoctor() {
     if (data.state === "done" && data.result) {
       const r = data.result;
       if (r.error) { box.textContent = "体检失败：" + r.error; return true; }
-      const okAll = r.integrity === "ok" && !r.foreign_key_errors && !r.file_errors && !r.projection_errors;
+      const okAll = r.integrity === "ok" && !r.foreign_key_errors && !r.file_errors && !r.project_file_errors && !r.projection_errors;
       box.innerHTML = "";
       const line = (label, value, good) => {
         const chip = document.createElement("span");
@@ -395,7 +456,8 @@ function initDoctor() {
       box.append(
         line("数据库完整性", r.integrity, r.integrity === "ok"),
         line("外键错误", String(r.foreign_key_errors), !r.foreign_key_errors),
-        line("登记文件校验", r.files_checked + " 个文件，错误 " + r.file_errors, !r.file_errors),
+        line("素材文件校验", r.files_checked + " 个文件，错误 " + r.file_errors, !r.file_errors),
+        line("项目文件校验", r.project_files_checked + " 个文件，错误 " + r.project_file_errors, !r.project_file_errors),
         line("检索投影校验", r.projections_checked + " 个投影，错误 " + r.projection_errors, !r.projection_errors),
         line("全文索引文档数", String(r.index_docs), Number(r.index_docs) > 0),
       );

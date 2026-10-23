@@ -54,8 +54,10 @@
 ## 事实层与 schema 演进
 
 - `jty_materials/store.py` 定义加固的 SQLite 事实库；人工写入只发生在离线 CLI / WebUI，绝不是 MCP 工具。
-- schema 版本链：`jty-mcp-0.1.0`（`schema_v1.sql`）→ v0.2（单位列 + 承装修试表）→ v0.3（施工明细表 + 证书范围复用 + 台账证据）→ v0.4（前向兼容的业务词汇扩展，旧证据保持不可变）。
-- 迁移是**前向-only**（`migrate-v02/v03/v04`），保留完整审计与核验历史；详见 [data-model.md](data-model.md)。
+- schema 版本链：`jty-mcp-0.1.0`（`schema_v1.sql`）→ v0.2（单位列 + 承装修试表）→ v0.3（施工明细表 + 证书范围复用 + 台账证据）→ v0.4（前向兼容的业务词汇扩展）→ v0.5（独立项目、项目原件、素材引用关系，旧证据保持不可变）。
+- 迁移是显式前向操作，当前代码使用 `migrate-v05`；历史 `migrate-v03/v04` 入口保留兼容并升级到当前 schema。保留完整审计与核验历史；详见 [data-model.md](data-model.md)。
+
+项目中心读服务 `Projects` 与 Material `Query` 分开；项目写操作通过同一 manager、操作锁、maintenance / generation、审计与恢复流程。`repository/projects/` 在正式仓库边界内，与唯一全文索引根 `repository/materials/` 隔离。附件只存储原件；引用只更新 `project_material`，不调用 Material 导入和 OCR 流程。项目上传恢复意图保存在 state 中，故中断恢复完成前不可丢弃 state。没有新增常驻服务、框架、数据库或 Node 生产运行时。
 
 ## 检索层
 

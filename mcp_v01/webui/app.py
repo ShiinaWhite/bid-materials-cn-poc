@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jty_materials.common import Config  # noqa: E402
 
-from webui import api, feedback, pages, service, thumbs, uploads  # noqa: E402
+from webui import api, feedback, pages, projects, service, thumbs, uploads  # noqa: E402
 from webui import render  # noqa: E402
 from webui import WEBUI_VERSION  # noqa: E402
 from webui.same_origin import post_allowed  # noqa: E402
@@ -78,6 +78,65 @@ def route(method, pattern):
 
 
 # ------------------------------------------------------------ handlers ----
+
+@route('GET', '/projects')
+def page_projects(req, ctx):
+    return html_response(projects.list_page(ctx.config, req.query))
+
+
+@route('GET', '/projects/new')
+def page_project_new(req, ctx):
+    return html_response(projects.edit_page(ctx.config))
+
+
+@route('GET', r'/project/(?P<pid>\d+)')
+def page_project(req, ctx):
+    return html_response(projects.detail_page(ctx.config, int(req.params['pid']), req.query))
+
+
+@route('GET', r'/project/(?P<pid>\d+)/edit')
+def page_project_edit(req, ctx):
+    return html_response(projects.edit_page(ctx.config, int(req.params['pid'])))
+
+
+@route('GET', r'/project/(?P<pid>\d+)/upload')
+def page_project_upload(req, ctx):
+    return html_response(projects.upload_page(ctx.config, int(req.params['pid'])))
+
+
+@route('POST', r'/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)')
+def api_project_write(req, ctx):
+    action = 'project.' + req.params['action'].replace('/', '.')
+    return json_response(*projects.write_api(ctx.config, req, action))
+
+
+@route('POST', '/api/project/file')
+def api_project_file(req, ctx):
+    return json_response(*projects.upload_api(ctx.config, ctx.project_jobs, req))
+
+
+@route('GET', r'/api/project/jobs/(?P<job>\w+)')
+def api_project_job(req, ctx):
+    job = ctx.project_jobs.get(req.params['job'])
+    return json_response(200, job.to_dict()) if job else json_response(404, dict(error='上传任务不存在'))
+
+
+@route('GET', r'/project-file/(?P<pid>\d+)/(?P<fid>[a-f0-9]{32})')
+def serve_project_file(req, ctx):
+    from jty_materials.projects import Projects, INLINE
+    from urllib.parse import quote
+    try:
+        row = Projects(ctx.config).resolve_file(int(req.params['pid']), req.params['fid'])
+    except (ValueError, OSError) as e:
+        return html_response(render.error_page(str(e)), status=409)
+    if row is None:
+        return html_response(render.error_page('项目文件不存在'), status=404)
+    ext = '.' + row['extension']
+    inline = ext in INLINE and not req.query.get('download')
+    disposition = 'inline' if inline else 'attachment'
+    return Response(200, stream_path=row['path'], content_type=INLINE.get(ext, 'application/octet-stream'), headers={
+        'Content-Disposition': disposition + "; filename*=UTF-8''" + quote(row['filename'], safe=''),
+        'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store'})
 
 @route("GET", "/")
 def page_home(req, ctx):
@@ -227,6 +286,7 @@ class AppContext:
     def __init__(self, config):
         self.config = config
         self.api = api.Api(config)
+        self.project_jobs = projects.FileJobs(config)
         self.feedback = feedback.store_for(config)
         self.search_gate = threading.Semaphore(2)
 
@@ -261,6 +321,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = str(error)
                     hint = None
                     status = 500
+                    if isinstance(error, (ValueError, KeyError, TypeError)) and path.startswith(('/projects', '/project/')):
+                        status = 400
                     if message.startswith("MAINTENANCE"):
                         status, message = 503, "系统正在进行写入维护（如 OCR 入库/备份），请稍后自动重试。"
                         hint = "维护通常在几秒到几分钟内结束。"

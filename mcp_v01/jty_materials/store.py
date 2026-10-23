@@ -12,7 +12,7 @@ from contextlib import closing
 
 from .common import digest, now, safe_path
 from .fields import FIELDS, ALLOWED, ORG_FIELDS, GRADE_FIELDS, validate_value, org_norm,field_spec,allowed_field,qualification_name
-from .schema_v04 import upgrade, VERSION
+from .schema_v05 import upgrade, VERSION
 
 
 SCHEMA_VERSION = VERSION
@@ -145,6 +145,7 @@ class Store:
     def __init__(self, config, *, readonly=False):
         self.c = config
         self.review = None
+        self.project_write = None
         if readonly:
             self.db = sqlite3.connect(config.db_path.as_uri() + "?mode=ro", uri=True, timeout=5)
             self.db.execute("PRAGMA query_only=ON")
@@ -167,6 +168,9 @@ class Store:
             self.db.create_function("review_" + key, 0,
                                     lambda k=key: self.review.get(k) if self.review else None)
         self.db.create_function('org_norm',1,org_norm)
+        for key in ('actor', 'action'):
+            self.db.create_function('project_' + key, 0,
+                                    lambda k=key: self.project_write.get(k) if self.project_write else None)
         # Once initialized, app connections cannot remove guards or alter schema.
         denied = {getattr(sqlite3, name) for name in (
             "SQLITE_DROP_TRIGGER", "SQLITE_DROP_TABLE", "SQLITE_DROP_INDEX", "SQLITE_DROP_VIEW",
@@ -203,9 +207,9 @@ class Store:
             con.execute('PRAGMA foreign_keys=ON');con.execute('PRAGMA busy_timeout=5000')
             version=con.execute("SELECT meta_value FROM schema_meta WHERE meta_key='schema_version'").fetchone()[0]
             if version==SCHEMA_VERSION:return {'changed':False,'schema':SCHEMA_VERSION}
-            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
+            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
             config.backup_dir.mkdir(parents=True,exist_ok=True)
-            backup=config.backup_dir/('schema-before-v04-'+uuid.uuid4().hex[:12]+'.db')
+            backup=config.backup_dir/('schema-before-v05-'+uuid.uuid4().hex[:12]+'.db')
             with backup.open('xb'):pass
             with closing(sqlite3.connect(backup)) as dest:con.backup(dest)
             with con:

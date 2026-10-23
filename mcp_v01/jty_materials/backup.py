@@ -20,6 +20,7 @@ def create_backup(config,name=None):
         with closing(sqlite3.connect(db_target)) as destination:
             store.db.backup(destination)
         files = dict(store.db.execute("SELECT relative_path,sha256 FROM material_file"))
+        files.update(dict(store.db.execute("SELECT relative_path,sha256 FROM project_file")))
         files.update(dict(store.db.execute("SELECT relative_path,sha256 FROM search_projection")))
         batches=config.repository_root/'batches'
         if batches.exists():
@@ -56,7 +57,7 @@ def restore_backup(backup, target, runtime_root=None):
     if (backup / "COMPLETE").read_text() != digest(backup / "manifest.json"):
         raise ValueError("incomplete or altered backup manifest")
     info = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
-    if info.get("format") != "jty-backup-0.1" or info.get("schema") not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0',SCHEMA_VERSION):
+    if info.get("format") != "jty-backup-0.1" or info.get("schema") not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0',SCHEMA_VERSION):
         raise ValueError("unsupported backup/schema")
     if digest(backup / "database.db") != info["db_sha256"] or digest(backup / "config.json") != info["config_sha256"]:
         raise ValueError("backup database/config checksum mismatch")

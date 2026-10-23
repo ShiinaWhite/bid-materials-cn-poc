@@ -210,7 +210,7 @@ class MobileUiTests(unittest.TestCase):
 
     def test_p05_post_routing_and_same_origin_guard_unchanged(self):
         routes = {p.pattern for method, p, _ in app.ROUTES if method == "POST"}
-        self.assertEqual(routes, {"^/api/upload$", "^/api/review$", "^/api/feedback$", "^/api/doctor$"})
+        self.assertEqual(routes, {"^/api/upload$", "^/api/review$", "^/api/feedback$", "^/api/doctor$", "^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$", "^/api/project/file$"})
         self.assertIn("post_allowed", inspect.getsource(app.Handler.do_POST))
         self.assertEqual(catalog.UPLOAD_EXTS, (".pdf", ".png", ".jpg", ".jpeg"))
 

@@ -193,7 +193,7 @@ def feedback_widget():
 
 
 def layout(title, content, active="", q="", sys_ok=True, hide_search=False):
-    navs = [("首页", "/", "home"), ("资料分类", "/browse", "browse"),
+    navs = [("首页", "/", "home"), ("项目中心", "/projects", "projects"), ("资料分类", "/browse", "browse"),
             ("上传资料", "/upload", "upload")]
     nav_html = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
@@ -207,7 +207,7 @@ def layout(title, content, active="", q="", sys_ok=True, hide_search=False):
     search_html = "" if hide_search else f"""
     <form class="topsearch" action="/browse" method="get" role="search">
       <span class="search-ico">{icon("search")}</span>
-      <input type="search" name="q" placeholder="搜索：项目、人员、证书编号或任意文字" value="{esc(q)}" autocomplete="off">
+      <input type="search" name="q" placeholder="搜索素材：人员、证书编号或任意文字" value="{esc(q)}" autocomplete="off">
     </form>"""
     return f"""<!doctype html>
 <html lang="zh-CN">

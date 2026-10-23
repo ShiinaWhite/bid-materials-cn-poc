@@ -183,24 +183,15 @@ class DoctorRunner:
         with Store(self.c, readonly=True) as store:
             integrity = store.db.execute("PRAGMA integrity_check").fetchone()[0]
             foreign_keys = len(store.db.execute("PRAGMA foreign_key_check").fetchall())
-            total_files = 0
-            file_errors = 0
-            for r in store.db.execute("SELECT relative_path,sha256 FROM material_file"):
-                total_files += 1
-                p = safe_path(self.c.repository_root, r["relative_path"])
-                if not p.is_file() or digest(p) != r["sha256"]:
-                    file_errors += 1
-            total_proj = 0
-            projection_errors = 0
-            for r in store.db.execute("SELECT relative_path,sha256 FROM search_projection"):
-                total_proj += 1
-                p = safe_path(self.c.repository_root, r["relative_path"])
-                if not p.is_file() or digest(p) != r["sha256"]:
-                    projection_errors += 1
+            from jty_materials.doctor import check_files
+            material_files = check_files(self.c, store.db, 'material_file')
+            project_files = check_files(self.c, store.db, 'project_file')
+            projection_files = check_files(self.c, store.db, 'search_projection')
         with Rpc([str(self.c.dowse_exe), "mcp"], env=dict(os.environ, DOWSE_INDEX_DIR=str(self.c.index_dir))) as rpc:
             index = rpc.tool("index_status", {})
         return {"integrity": integrity, "foreign_key_errors": foreign_keys,
-                "files_checked": total_files, "file_errors": file_errors,
-                "projections_checked": total_proj, "projection_errors": projection_errors,
+                "files_checked": material_files['checked'], "file_errors": len(material_files['errors']),
+                "project_files_checked": project_files['checked'], "project_file_errors": len(project_files['errors']),
+                "projections_checked": projection_files["checked"], "projection_errors": len(projection_files["errors"]),
                 "index_docs": index.get("num_docs", "—"),
                 "manager": request(self.c, "status", start=False)}

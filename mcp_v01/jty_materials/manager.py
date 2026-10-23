@@ -83,15 +83,23 @@ class Supervisor:
         # Do not require the current schema here: an explicitly retried failed
         # migration may still have the previous compatible schema after rollback.
         from contextlib import closing
+        from .projects import reconcile_files
         with closing(sqlite3.connect(self.c.db_path.as_uri() + '?mode=ro', uri=True)) as db:
             db.execute('PRAGMA query_only=ON')
             if [r[0] for r in db.execute('PRAGMA integrity_check')] != ['ok']:
                 raise RuntimeError('database integrity check failed')
             if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
                 raise RuntimeError('database foreign key check failed')
+            # Only a healthy committed DB may decide whether a pending UUID
+            # publication is registered evidence or an abandoned file.
+            reconcile_files(self.c)
             for path, sha256 in db.execute('SELECT relative_path,sha256 FROM material_file'):
                 if digest(safe_path(self.c.repository_root, path)) != sha256:
                     raise RuntimeError('registered evidence checksum mismatch')
+            if db.execute("SELECT 1 FROM sqlite_schema WHERE name='project_file'").fetchone():
+                for path, sha256 in db.execute('SELECT relative_path,sha256 FROM project_file'):
+                    if digest(safe_path(self.c.repository_root, path)) != sha256:
+                        raise RuntimeError('registered project evidence checksum mismatch')
 
     def recover(self):
         """Reconcile derivatives from committed DB state, never replay a write.
@@ -126,7 +134,7 @@ class Supervisor:
             resuming_migration = False
             # A previous failed recovery must be reconciled before any new write.
             if self.c.maintenance_file.exists():
-                if action in ('migrate-v03', 'migrate-v04'):
+                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05'):
                     # The migration itself is the explicit repair for an older
                     # schema. Check evidence/DB first; it keeps maintenance until
                     # successful completion, just like every other job.
@@ -145,11 +153,14 @@ class Supervisor:
                     result = review_fact(self.c, payload)
                 elif action == "backup":
                     result = create_backup(self.c,**payload)
-                elif action in ('migrate-v03','migrate-v04'):
+                elif action in ('migrate-v03','migrate-v04','migrate-v05'):
                     from .store import Store
                     result=Store.migrate(self.c)
                     if resuming_migration:
                         self.recover()
+                elif action.startswith('project.'):
+                    from .projects import execute
+                    result = execute(self.c, action, payload)
                 elif action=='phase_import':
                     from .phase_ocr import PhaseOcr
                     if self.phase_ocr is None:self.phase_ocr=PhaseOcr(self.c)

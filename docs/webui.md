@@ -64,6 +64,30 @@ feedback/
 - 该目录已列入 `.gitignore`：真实反馈内容与截图不应进入任何 Git 仓库。
 - 附件读取接口对路径做了规范化校验，只能访问反馈目录内部的文件。
 
+## 项目中心（WebUI v0.5.0）
+
+顶部提供“首页 / 项目中心 / 资料分类 / 上传资料”。`/projects` 支持关键词、进行中/已归档筛选与分页，手机显示项目卡片。新建项目只需名称，招标编号、招标人、标段可选；系统自动生成项目编号。
+
+项目详情可编辑基础信息，按六个宽分类上传与下载原件，通过“搜索已有素材”复用 Material 检索并建立引用；取消引用保留关系审计，素材详情显示“用于 N 个项目”。归档后可继续查看原件和引用，恢复后可继续写入。项目记录显示创建、编辑、附件与引用事件。没有用户账户时，基础编辑与引用审计使用明确的本机身份“本机用户”；上传与归档表单可填写经办人，不代表权限认证。
+
+项目上传使用独立 `/api/project/file`，支持拖拽和系统文件选择，最大 200MB，仅 PDF/PNG/JPG/JPEG 可 inline，其余项目格式强制下载。与 `/api/upload` 的普通素材上传格式和识别逻辑分开。全部项目 POST 继承 Handler 同源检查，全部业务写入经 manager 串行执行。项目页面与文件读取沿用 maintenance / generation 检查。
+
+路由：
+
+```text
+GET  /projects                    /projects/new
+GET  /project/{id}                /project/{id}/edit
+GET  /project/{id}/upload
+GET  /project-file/{id}/{file_id}
+POST /api/project/create          /api/project/update
+POST /api/project/archive         /api/project/restore
+POST /api/project/file
+POST /api/project/material/link   /api/project/material/unlink
+GET  /api/project/jobs/{job_id}
+```
+
+项目中心不自动识别名称、不 OCR、不全文索引、不拆分或晋升素材，不增加 AI、任务/进度或权限模块。
+
 ## 安全设计
 
 - 读路径每请求打开只读 Store 连接；所有写操作转交管理进程认证 RPC，Web 层不新增写语义。

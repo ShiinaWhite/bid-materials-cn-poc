@@ -17,6 +17,7 @@
 - **WebUI**：本地浏览器界面，覆盖浏览、检索、上传入库（PDF / PNG / JPG / JPEG）、人工核验、运行状态体检与用户反馈
 - **批次入库**：离线批次计划 + 逐项回执，支持中断恢复，不提供批量写入 MCP
 - **备份恢复**：带完成标记与哈希清单的一致性备份；索引与运行态可随时重建
+- **项目中心（v0.5.0）**：以独立项目容器保存投标工作原件、引用全局素材、保留取消引用与归档审计；项目文件不 OCR、不进入全局素材搜索。已有库必须明确执行 schema 迁移，启动 WebUI 不会自动升级。
 
 ## 目录结构
 
@@ -149,6 +150,15 @@ python -m unittest discover -p "test_*.py"
 ```
 
 测试全部在临时目录创建独立资料库运行，不读取、不修改真实库与真实配置。
+
+项目中心完整门禁必须显式提供真实 dowse（测试会复制程序，不使用部署配置、进程或索引）：
+
+```powershell
+$env:P05_DOWSE_EXE = '<本机真实 dowse.exe 的绝对路径>'
+python -B mcp_v01/run_project_center_tests.py
+```
+
+从仓库根运行；fixture、测试日志和汇总保存在 `runs/project-center/`，任何 skip 都视为失败。数据模型、显式 `migrate-v05`、恢复与格式边界见 [docs/data-model.md](docs/data-model.md)，项目路由与交互见 [docs/webui.md](docs/webui.md)。
 
 ## 许可证
 

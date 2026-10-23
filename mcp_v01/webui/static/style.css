@@ -503,3 +503,43 @@ details.ocr-details[open] summary, details.adv-details[open] summary { margin-bo
 .fb-result .ok-box, .fb-result .warn-box, .fb-result .err-box {
   border-radius: 8px; padding: 12px 14px; font-size: 0.9rem;
 }
+/* Project center: independent private file and material reference sections. */
+.project-center { min-width: 0; overflow-wrap: anywhere; }
+.project-heading, .project-card-head, .project-row, .project-controls, .project-filters { display: flex; gap: 16px; align-items: center; }
+.project-heading, .project-card-head, .project-row { justify-content: space-between; }
+.project-heading { margin-bottom: 24px; }
+.project-heading h1 { margin-bottom: 8px; }
+.project-controls { flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.project-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.project-card { margin: 0; min-width: 0; }
+.project-card h2 { font-size: 19px; line-height: 1.6; margin: 16px 0; }
+.project-card dl, .project-meta { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 16px; }
+.project-center dt { color: var(--muted, #68717f); }
+.project-center dd { margin: 0; min-width: 0; }
+.project-center .project-form { max-width: 720px; margin: 24px auto; }
+.project-filters { align-items: flex-end; margin: 20px 0; flex-wrap: wrap; }
+.project-filters .field { margin: 0; flex: 1 1 220px; }
+.project-filters select { min-width: 120px; }
+.project-center .field { display: flex; flex-direction: column; gap: 8px; }
+.project-center .input, .project-center .btn { min-height: 44px; max-width: 100%; }
+.project-center .input { width: 100%; }
+.project-row { padding: 14px 0; border-bottom: 1px solid #e8ebef; }
+.project-row > div { min-width: 0; }
+.project-row p { margin: 6px 0 0; }
+.project-row form { flex-shrink: 0; }
+.project-error { color: #b3261e; white-space: pre-wrap; }
+.project-error:empty { display: none; }
+.project-drop { display: block; padding: 24px; border: 1px dashed #aab6c5; border-radius: 10px; background: #f8fafc; }
+.project-drop input { display: block; margin-top: 16px; }
+.project-drop.dragging { border-color: #2764bf; background: #eef4ff; }
+.project-center .card { margin-bottom: 20px; }
+@media (max-width: 1100px) { .project-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 700px) {
+  .project-grid { grid-template-columns: minmax(0,1fr); }
+  .project-heading { align-items: flex-start; flex-direction: column; }
+  .project-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .project-heading h1 { font-size: 24px; }
+  .project-drop { padding: 16px; }
+  .project-filters { gap: 12px; }
+  .project-filters .field { flex-basis: 100%; }
+}
