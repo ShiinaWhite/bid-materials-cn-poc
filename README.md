@@ -17,7 +17,8 @@
 - **WebUI**：本地浏览器界面，覆盖浏览、检索、上传入库（PDF / PNG / JPG / JPEG）、人工核验、运行状态体检与用户反馈
 - **批次入库**：离线批次计划 + 逐项回执，支持中断恢复，不提供批量写入 MCP
 - **备份恢复**：带完成标记与哈希清单的一致性备份；索引与运行态可随时重建
-- **项目中心（v0.5.0）**：以独立项目容器保存投标工作原件、引用全局素材、保留取消引用与归档审计；项目文件不 OCR、不进入全局素材搜索。已有库必须明确执行 schema 迁移，启动 WebUI 不会自动升级。
+- **项目中心**：以独立项目容器保存投标工作原件、引用全局素材、保留取消引用与归档审计；项目文件不进入全局素材搜索。已有库必须明确执行 schema 迁移，启动 WebUI 不会自动升级。
+- **项目文档（v0.6.0）**：手工异步整理 PDF / DOCX / XLSX / TXT / MD 内容，独立全文索引仅搜索当前项目，返回文件、页码、章节或 Sheet/行范围。历史标书仅供参考，不生成 Material、候选事实或已核验事实。详见 [项目文档说明](docs/project-documents.md)。
 
 ## 目录结构
 
@@ -47,7 +48,7 @@
 1. **Python 3.13**。核心链路（PDF 入库走 Umi-OCR、MCP 查询、WebUI 浏览/反馈、CLI 维护）只使用标准库；仅下列能力需要 `pip install -r mcp_v01/requirements.local.txt`
 2. **Umi-OCR**（Rapid 版，https://github.com/hiroi-sora/Umi-OCR ）——负责 OCR；验收版本为 Umi-OCR Rapid 2.1.5
 3. **dowse**（https://github.com/ltspace/dowse ）——负责中文全文检索（Tantivy + jieba）
-4. 运行**完整测试套件**必须安装 `mcp_v01/requirements.local.txt`（其中 3 个包也被下列可选能力使用）
+4. 运行**完整测试套件**必须安装 `mcp_v01/requirements.local.txt`（其中 4 个包也被下列可选能力使用）
 
 ## 第三方 Python 依赖
 
@@ -55,8 +56,8 @@
 |---|---|---|---|
 | Pillow | PNG/JPEG 材料入库（EXIF 摆正）、图片缩略图 | 图片材料无法入库/无缩略图；PDF 材料入库不受影响 | MIT-CMU |
 | PyMuPDF | PDF 缩略图、PDF 原生文本抽取（native text）、文档富化 enrich、reextract | WebUI 缺 PDF 缩略图；上述命令返回明确错误，系统其余功能不受影响 | **AGPL-3.0 或 Artifex 商业许可（双许可）** |
-| openpyxl | 内部 PhaseOcr 的 XLSX 原生文本抽取（普通 WebUI 上传暂不支持） | 仅 XLSX 抽取不可用 | MIT |
-| python-docx | 仅测试夹具生成（test_phase1） | 不影响任何运行功能 | MIT |
+| openpyxl | Project Document / 内部 PhaseOcr 的 XLSX 原生文本抽取 | XLSX 文档内容不可提取；原件保管不受影响 | MIT |
+| python-docx | Project Document DOCX 原生 XML、标题与表格抽取，以及测试夹具生成 | DOCX 文档内容不可提取；原件保管不受影响 | MIT |
 
 降级是代码内建行为：WebUI 缩略图在缺包时自动跳过并记日志；缺包时的写入类命令经管理进程统一返回错误，不会中断服务。
 
@@ -122,7 +123,7 @@ python -B mcp_v01/cli.py shutdown       # 停止管理进程
 - 用户反馈：右下角反馈入口；反馈数据默认保存在项目根 `feedback/`，**不属于资料库 repository**，首次使用时自动创建
 - 移动端自适应：手机上目录页为卡片式列表 + 可展开筛选面板，上传/反馈支持拍照辅助入口（同一 API 与白名单），桌面界面不变
 
-普通 WebUI 上传和更新原件仅支持 **PDF / PNG / JPG / JPEG**（单文件不超过 200MB）。DOCX / XLSX 暂不支持普通上传，`.doc` 不支持；内部 PhaseOcr 的部分 Office 原生抽取能力不代表普通入库已支持 Office。完整 DOCX、大 PDF 与历史标书能力留待后续阶段。
+普通 Material WebUI 上传和更新原件仅支持 **PDF / PNG / JPG / JPEG**（单文件不超过 200MB）。DOCX / XLSX 暂不支持普通素材上传。Project 可独立保存 Office 原件，并手工异步整理 PDF/DOCX/XLSX 等内容；项目文本只进入项目搜索，不生成公司权威素材。
 
 办公室使用步骤与失败后的处理见 [办公室使用说明](docs/office-use.md)。
 
@@ -144,21 +145,15 @@ python -B mcp_v01/cli.py shutdown       # 停止管理进程
 
 ## 运行测试
 
-```powershell
-cd mcp_v01
-python -m unittest discover -p "test_*.py"
-```
-
-测试全部在临时目录创建独立资料库运行，不读取、不修改真实库与真实配置。
-
-项目中心完整门禁必须显式提供真实 dowse（测试会复制程序，不使用部署配置、进程或索引）：
+完整门禁必须显式提供真实 dowse 与 Umi-OCR 2.1.5（测试会复制程序及分配独立端口，不使用部署配置、进程、业务文件或索引）：
 
 ```powershell
 $env:P05_DOWSE_EXE = '<本机真实 dowse.exe 的绝对路径>'
+$env:LARGE_DOC_UMI_EXE = '<本机真实 Umi-OCR 2.1.5/Umi-OCR.exe 的绝对路径>'
 python -B mcp_v01/run_project_center_tests.py
 ```
 
-从仓库根运行；fixture、测试日志和汇总保存在 `runs/project-center/`，任何 skip 都视为失败。数据模型、显式 `migrate-v05`、恢复与格式边界见 [docs/data-model.md](docs/data-model.md)，项目路由与交互见 [docs/webui.md](docs/webui.md)。
+从仓库根运行；fixture、TEMP/TMP、日志和汇总保存在 `runs/large-document/`，任何 skip 都视为失败。当前完整套件为原 140 项加文档 36 项。数据模型、显式 `migrate-v06`、恢复与格式边界见 [docs/data-model.md](docs/data-model.md) / [docs/project-documents.md](docs/project-documents.md)，项目路由与交互见 [docs/webui.md](docs/webui.md)。
 
 ## 许可证
 

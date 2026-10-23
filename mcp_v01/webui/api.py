@@ -187,11 +187,14 @@ class DoctorRunner:
             material_files = check_files(self.c, store.db, 'material_file')
             project_files = check_files(self.c, store.db, 'project_file')
             projection_files = check_files(self.c, store.db, 'search_projection')
+            from jty_materials.doctor import check_documents
+            documents = check_documents(self.c, store.db)
         with Rpc([str(self.c.dowse_exe), "mcp"], env=dict(os.environ, DOWSE_INDEX_DIR=str(self.c.index_dir))) as rpc:
             index = rpc.tool("index_status", {})
         return {"integrity": integrity, "foreign_key_errors": foreign_keys,
                 "files_checked": material_files['checked'], "file_errors": len(material_files['errors']),
                 "project_files_checked": project_files['checked'], "project_file_errors": len(project_files['errors']),
                 "projections_checked": projection_files["checked"], "projection_errors": len(projection_files["errors"]),
-                "index_docs": index.get("num_docs", "—"),
+                "index_docs": index.get("num_docs", "—"), "project_documents": documents,
+                "project_document_errors": 0 if documents['healthy'] else 1,
                 "manager": request(self.c, "status", start=False)}

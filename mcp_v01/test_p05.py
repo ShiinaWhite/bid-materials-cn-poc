@@ -82,7 +82,7 @@ class OriginTests(unittest.TestCase):
 
     def test_all_post_routes_guarded_before_dispatch_and_body_read(self):
         routes = [p.pattern for method, p, _ in app.ROUTES if method == 'POST']
-        self.assertEqual(set(routes), {'^/api/upload$', '^/api/review$', '^/api/feedback$', '^/api/doctor$', '^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$', '^/api/project/file$'})
+        self.assertEqual(set(routes), {'^/api/upload$', '^/api/review$', '^/api/feedback$', '^/api/doctor$', '^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$', '^/api/project/file$', '^/api/project/document/(?P<action>extract|retry|rebuild)$'})
         context = SimpleNamespace(config=SimpleNamespace(log=lambda *a, **k: None), api=mock.Mock())
         handler = type('IsolatedHandler', (app.Handler,), {'app': context})
         server = app.ThreadingHTTPServer(('127.0.0.1', 0), handler)
@@ -348,7 +348,7 @@ class RealManagerTests(unittest.TestCase):
         if not executable.is_file():
             self.skipTest('install dowse or set P05_DOWSE_EXE to run real process regression')
         # Short path: old Windows MAX_PATH also applies to retained versions.
-        artifacts = Path(__file__).resolve().parents[1]/'runs/project-center'
+        artifacts = Path(__file__).resolve().parents[1]/'runs/large-document/project-center'
         artifacts.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='p05-', dir=artifacts, delete=False) as root:
             root = Path(root)

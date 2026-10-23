@@ -85,6 +85,13 @@ class Config:
         if self.backup_dir.is_relative_to(self.repository_root):
             raise ValueError("backups must be outside the repository")
         self.maintenance_file = self.state_dir / "maintenance.json"
+        # Independent, rebuildable project text; never under Material or dowse.
+        self.document_root = self.state_dir.parent / 'project-documents'
+        self.document_tmp = self.state_dir.parent / 'tmp/project-documents'
+        self.document_index = self.index_dir.parent / 'project-documents/index.sqlite3'
+        for p in (self.document_root, self.document_tmp, self.document_index.parent):
+            if p.is_relative_to(self.repository_root) or p.is_relative_to(self.index_dir):
+                raise ValueError('project derivatives must be outside repository and Material index')
 
     def log(self, event, **data):
         self.logs_dir.mkdir(parents=True, exist_ok=True)

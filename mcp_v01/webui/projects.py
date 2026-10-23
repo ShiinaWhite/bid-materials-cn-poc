@@ -2,15 +2,20 @@
 from pathlib import Path
 import time
 import json
+import sqlite3
 
 from jty_materials import projects as model
 from jty_materials.manager import request
+from jty_materials.project_documents import Documents
+from jty_materials.document_extract import SUPPORTED
 from . import render, service, uploads
 
 esc = render.esc
 LABELS = dict(zip(model.CATEGORIES, ('招标资料', '投标成果', '项目证明资料', '项目过程资料', '项目结果', '其他')))
 EVENTS = {'project.create': '创建项目', 'project.update': '编辑项目', 'project.archive': '归档项目',
           'project.restore': '恢复项目', 'project.file.add': '上传项目文件',
+          'project.document.extract': '整理文档内容', 'project.document.retry': '重试整理文档内容',
+          'project.document.rebuild': '重新整理文档内容',
           'project.material.link': '引用素材', 'project.material.unlink': '取消素材引用'}
 
 
@@ -91,6 +96,8 @@ def detail_page(config, pid, params):
         <section class="card"><dl class="project-meta"><dt>招标编号</dt><dd>{esc(p['tender_no'] or '—')}</dd>
         <dt>招标人</dt><dd>{esc(p['tenderer'] or '—')}</dd><dt>标段名称</dt><dd>{esc(p['lot_name'] or '—')}</dd></dl></section>
         <section class="card"><h2>项目文件</h2>'''
+    documents = {d['project_file_id']: d for d in Documents(config).status(pid)}
+    content += f'<p><a class="btn" href="/project/{pid}/search">搜索项目文件</a></p><p class="muted small">历史文件仅供参考，内容不代表公司当前有效资质。</p>'
     for key, label in LABELS.items():
         files = []
         for f in p['files']:
@@ -98,9 +105,16 @@ def detail_page(config, pid, params):
                 continue
             url = f'/project-file/{pid}/{f["project_file_id"]}'
             view = f'<a class="btn" href="{url}" target="_blank">查看</a>' if '.'+f['extension'] in model.INLINE else ''
+            doc = documents.get(f['project_file_id'], {})
+            doc_state = document_state(doc)
+            action = ''
+            if active and f['extension'] in SUPPORTED and doc.get('status') not in ('queued','processing'):
+                label = '提取内容' if doc.get('status') == 'pending' else '重新整理'
+                action = form('project.document.extract', pid, label=label, body=f'<input type="hidden" name="project_file_id" value="{f["project_file_id"]}">')
             files.append(f'''<li class="project-row"><div><strong>{esc(f['filename'])}</strong>
-                <p class="muted small">{render.fmt_bytes(f['size_bytes'])} · {render.fmt_dt(f['imported_at'])} · {esc(f['imported_by'])}</p></div>
-                <div class="project-controls">{view}<a class="btn" href="{url}?download=1">下载</a></div></li>''')
+                <p class="muted small">{render.fmt_bytes(f['size_bytes'])} · {render.fmt_dt(f['imported_at'])} · {esc(f['imported_by'])}</p>
+                <p class="muted small" data-document-file="{f['project_file_id']}">文档内容：{esc(doc_state)}</p></div>
+                <div class="project-controls">{action}{view}<a class="btn" href="{url}?download=1">下载</a></div></li>''')
         content += f'<h3>{label}</h3><ul class="plain-list">{"".join(files) or "<li class=muted>暂无文件</li>"}</ul>'
     content += '</section><section class="card" id="references"><h2>引用素材</h2>'
     summarized = service.summarize(config, [r['material_id'] for r in p['references']])
@@ -133,7 +147,51 @@ def detail_page(config, pid, params):
         content += f'<li>{esc(EVENTS.get(row["action"],row["action"]))} {esc(subject)} · {esc(row["actor"])} · {render.fmt_dt(row["at"])}</li>'
     content += '</ul></section><section class="card"><h2>项目归档</h2><p class="muted">归档后仍可查看原件与引用素材；恢复后可继续编辑。</p>'
     content += form('project.archive' if active else 'project.restore', pid, label='归档项目' if active else '恢复项目', body=actor_field()) + '</section>'
+    content += f'<div data-document-project="{pid}"></div>'
     return layout(config, p['name'], content)
+
+
+def document_state(doc):
+    status = doc.get('status', 'pending')
+    labels = dict(pending='未处理', queued='等待整理', processing='正在整理内容', complete='已可搜索',
+                  partial='部分内容未识别', failed='内容提取失败', unsupported='暂不支持提取，可下载原件')
+    label = labels.get(status, '未处理')
+    if doc.get('extension') not in SUPPORTED:
+        label = '暂不支持提取，可下载原件'
+    if doc.get('index_status') == 'failed':
+        label += '；搜索待修复，请重新整理'
+    if status == 'processing' and doc.get('total_units') is not None:
+        kind = '页' if doc.get('progress_kind') == 'page' else '个工作表'
+        label += f'（{doc.get("processed_units",0)} / {doc["total_units"]} {kind}）'
+    return label
+
+
+def search_page(config, pid, params):
+    p = model.Projects(config).detail(pid)
+    q = params.get('q', '').strip()
+    content = f'''<p><a href="/project/{pid}">返回 {esc(p['name'])}</a></p><section class="card">
+        <h1>搜索项目文件</h1><p class="muted">仅搜索当前项目。历史文件仅供参考，不代表公司当前有效资质。</p>
+        <form class="project-filters" action="/project/{pid}/search" method="get">
+        <label class="field"><span>文件内容关键词</span><input class="input" type="search" name="q" value="{esc(q)}" maxlength="200" required placeholder="项目经理、工期、付款方式"></label>
+        <button class="btn btn-primary" type="submit">搜索</button></form>'''
+    if q:
+        try:
+            result = Documents(config).search(pid, q, params.get('page', 1))
+            content += f'<p>找到 {result["total"]} 处内容</p><ul class="plain-list document-results">'
+            for item in result['items']:
+                location = f'第 {item["page_no"]} 页' if item['page_no'] else item['section_path']
+                if item['sheet_name']:
+                    location = f'Sheet：{item["sheet_name"]} · 第 {item["row_start"]}–{item["row_end"]} 行'
+                url = f'/project-file/{pid}/{item["project_file_id"]}'
+                if item['page_no']:
+                    url += f'#page={item["page_no"]}'
+                content += f'''<li><h2><a href="{url}" target="_blank">{esc(item['filename'])}</a></h2>
+                    <p class="muted">{esc(location)}</p><p class="document-snippet">{esc(item['snippet'])}</p></li>'''
+            content += '</ul>' + render.pagination(f'/project/{pid}/search', result['page'], result['pages'], result['total'], q=q)
+        except (OSError, RuntimeError, sqlite3.Error):
+            content += '<p role="alert">项目搜索暂不可用，请重新整理文件或请管理员重建项目搜索。原件仍可下载。</p>'
+    content += '</section>'
+    return layout(config, '搜索项目文件', content)
 
 
 def upload_page(config, pid):
@@ -144,7 +202,7 @@ def upload_page(config, pid):
     body = f'''<label class="field"><span>文件 *</span>
         <span class="project-drop">点击选择或拖拽项目文件到这里
         <input class="input" type="file" name="file" accept="{','.join(model.EXTENSIONS)}" required></span></label>
-        <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。只保存原件，不识别、不解压。</p>
+        <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>
         <label class="field"><span>分类 *</span><select class="input" name="category">{options}</select></label>{actor_field()}'''
     return layout(config, '上传项目文件', f'<p><a href="/project/{pid}">返回 {esc(p["name"])}</a></p><section class="card project-form"><h1>上传项目文件</h1>' + form('project.file.add', pid, label='上传项目文件', body=body) + '</section>')
 

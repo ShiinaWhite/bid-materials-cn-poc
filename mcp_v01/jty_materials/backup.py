@@ -42,6 +42,7 @@ def create_backup(config,name=None):
     atomic_write(target / "config.json", config.path.read_bytes(), immutable=True)
     info = {"format": "jty-backup-0.1", "at": now(), "schema": SCHEMA_VERSION,
             "db_sha256": digest(db_target), "config_sha256": digest(target / "config.json"),
+            "project_documents": "DB metadata and raw/normalized units included; projections/index rebuildable and excluded",
             "runtime": {"dowse_exe": str(config.dowse_exe), "umi_exe": str(config.umi_exe)}, "files": manifest}
     atomic_write(target / "manifest.json", json.dumps(info, ensure_ascii=False, indent=2), immutable=True)
     # The completion marker is published last; partial backups are not restorable.
@@ -57,7 +58,7 @@ def restore_backup(backup, target, runtime_root=None):
     if (backup / "COMPLETE").read_text() != digest(backup / "manifest.json"):
         raise ValueError("incomplete or altered backup manifest")
     info = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
-    if info.get("format") != "jty-backup-0.1" or info.get("schema") not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0',SCHEMA_VERSION):
+    if info.get("format") != "jty-backup-0.1" or info.get("schema") not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0',SCHEMA_VERSION):
         raise ValueError("unsupported backup/schema")
     if digest(backup / "database.db") != info["db_sha256"] or digest(backup / "config.json") != info["config_sha256"]:
         raise ValueError("backup database/config checksum mismatch")
@@ -87,4 +88,5 @@ def restore_backup(backup, target, runtime_root=None):
                dowse_exe="runtime/dowse/dowse.exe", umi_url=url)
     atomic_write(target / "config.json", json.dumps(raw, ensure_ascii=False, indent=2), immutable=True)
     Store.migrate(Config(target/'config.json'))
-    return {"config": str(target / "config.json"), "index_rebuild_required": True}
+    return {"config": str(target / "config.json"), "index_rebuild_required": True,
+            "project_document_rebuild_required": True}

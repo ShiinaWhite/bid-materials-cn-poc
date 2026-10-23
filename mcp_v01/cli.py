@@ -22,7 +22,12 @@ def main():
     init.add_argument("--dowse", default=str(project / "runtime/dowse/dowse.exe"))
     init.add_argument("--fixture-only", action="store_true")
     watch = commands.add_parser("watch"); watch.add_argument("action", choices=["start", "stop", "status"])
-    commands.add_parser("index"); commands.add_parser("health"); commands.add_parser("shutdown"); commands.add_parser("backup");commands.add_parser('migrate-v02');commands.add_parser('migrate-v03');commands.add_parser('migrate-v04');commands.add_parser('migrate-v05')
+    commands.add_parser("index"); commands.add_parser("health"); commands.add_parser("shutdown"); commands.add_parser("backup");commands.add_parser('migrate-v02');commands.add_parser('migrate-v03');commands.add_parser('migrate-v04');commands.add_parser('migrate-v05');commands.add_parser('migrate-v06')
+    commands.add_parser('project-document-index-rebuild')
+    for action in ('extract','retry','rebuild'):
+        command = commands.add_parser('project-document-'+action)
+        command.add_argument('project_id', type=int)
+        command.add_argument('project_file_id')
     add = commands.add_parser("add"); add.add_argument("--relative-root", required=True)
     for name in ("import", "replace"):
         p = commands.add_parser(name); p.add_argument("--source", required=True); p.add_argument("--actor", required=True)
@@ -61,7 +66,10 @@ def main():
     config = Config(args.config)
     if args.command == "watch":
         return request(config, "status" if args.action == "status" else "watch_"+args.action, start=args.action != "status")
-    if args.command in ("index", "health", "backup", "shutdown",'migrate-v02','migrate-v03','migrate-v04','migrate-v05'):
+    if args.command.startswith('project-document-'):
+        action = args.command.removeprefix('project-document-').replace('-', '.')
+        return request(config, 'project.document.'+action, {k: getattr(args,k) for k in ('project_id','project_file_id') if hasattr(args,k)})
+    if args.command in ("index", "health", "backup", "shutdown",'migrate-v02','migrate-v03','migrate-v04','migrate-v05','migrate-v06'):
         if args.command=='migrate-v02':raise ValueError('v0.3 code requires explicit migrate-v03; use the v0.2 snapshot for an exact v0.2 migration')
         return request(config, args.command, start=args.command != "shutdown")
     if args.command == "add":
@@ -109,12 +117,14 @@ def main():
             material_files = check_files(config, store.db, 'material_file')
             project_files = check_files(config, store.db, 'project_file')
             projection_files = check_files(config, store.db, 'search_projection')
+            from jty_materials.doctor import check_documents
+            documents = check_documents(config, store.db)
         with Rpc([str(config.dowse_exe), "mcp"], env=dict(os.environ, DOWSE_INDEX_DIR=str(config.index_dir))) as rpc:
             status = rpc.tool("index_status", {})
         return {"integrity": integrity, "foreign_key_errors": foreign_keys,
                 "files_checked": material_files['checked'], "file_errors": material_files['errors'],
                 "project_files_checked": project_files['checked'], "project_file_errors": project_files['errors'],
-                "projection_errors": projection_files['errors'], "index": status,
+                "projection_errors": projection_files['errors'], "index": status, "project_documents": documents,
                 "manager": request(config, "status", start=False), "maintenance": config.maintenance_file.exists()}
 
 

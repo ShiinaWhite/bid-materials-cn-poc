@@ -64,7 +64,7 @@ feedback/
 - 该目录已列入 `.gitignore`：真实反馈内容与截图不应进入任何 Git 仓库。
 - 附件读取接口对路径做了规范化校验，只能访问反馈目录内部的文件。
 
-## 项目中心（WebUI v0.5.0）
+## 项目中心（WebUI v0.6.0）
 
 顶部提供“首页 / 项目中心 / 资料分类 / 上传资料”。`/projects` 支持关键词、进行中/已归档筛选与分页，手机显示项目卡片。新建项目只需名称，招标编号、招标人、标段可选；系统自动生成项目编号。
 
@@ -86,7 +86,7 @@ POST /api/project/material/link   /api/project/material/unlink
 GET  /api/project/jobs/{job_id}
 ```
 
-项目中心不自动识别名称、不 OCR、不全文索引、不拆分或晋升素材，不增加 AI、任务/进度或权限模块。
+项目文件上传后可手工“提取内容/重新整理”，异步显示等待、整理中、已可搜索、部分未识别、失败；`/project/{id}/search` 搜索本项目 PDF 页、DOCX 章节和 XLSX Sheet/行。状态为 `GET /api/project/{id}/documents`，整理操作为 `POST /api/project/document/{extract|retry|rebuild}`，继续由同源防护和 manager 串行写控制。详情见 [project-documents.md](project-documents.md)。不自动识别名称、不拆分/晋升素材，不增加 AI 或权限模块。
 
 ## 安全设计
 

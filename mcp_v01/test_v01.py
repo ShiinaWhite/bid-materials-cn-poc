@@ -22,7 +22,7 @@ from jty_materials.rpc import Rpc
 from jty_materials.ocr import Ocr
 
 
-BASE = Path(__file__).resolve().parents[1] / "runs" / ("v01-regression-"+dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+BASE = Path(__file__).resolve().parents[1] / "runs/large-document" / ("v01-regression-"+dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
 EXPIRY = (dt.date.today()+dt.timedelta(days=60)).isoformat()
 
 

@@ -21,7 +21,7 @@ from jty_materials.store import Store
 from webui import app, catalog, pages, render
 from webui.app import STATIC_DIR
 
-BASE = Path(__file__).resolve().parents[1] / "runs" / ("mobile-ui-" + uuid.uuid4().hex[:8])
+BASE = Path(__file__).resolve().parents[1] / "runs/large-document" / ("mobile-ui-" + uuid.uuid4().hex[:8])
 
 UPLOAD_ACCEPT = 'accept=".pdf,.png,.jpg,.jpeg"'
 FEEDBACK_ACCEPT = 'accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"'
@@ -210,7 +210,7 @@ class MobileUiTests(unittest.TestCase):
 
     def test_p05_post_routing_and_same_origin_guard_unchanged(self):
         routes = {p.pattern for method, p, _ in app.ROUTES if method == "POST"}
-        self.assertEqual(routes, {"^/api/upload$", "^/api/review$", "^/api/feedback$", "^/api/doctor$", "^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$", "^/api/project/file$"})
+        self.assertEqual(routes, {"^/api/upload$", "^/api/review$", "^/api/feedback$", "^/api/doctor$", "^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$", "^/api/project/file$", "^/api/project/document/(?P<action>extract|retry|rebuild)$"})
         self.assertIn("post_allowed", inspect.getsource(app.Handler.do_POST))
         self.assertEqual(catalog.UPLOAD_EXTS, (".pdf", ".png", ".jpg", ".jpeg"))
 

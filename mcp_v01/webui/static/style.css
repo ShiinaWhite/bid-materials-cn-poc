@@ -543,3 +543,9 @@ details.ocr-details[open] summary, details.adv-details[open] summary { margin-bo
   .project-filters { gap: 12px; }
   .project-filters .field { flex-basis: 100%; }
 }
+/* Project document evidence stays readable on narrow screens. */
+.document-snippet { white-space: pre-wrap; overflow-wrap: anywhere; }
+.document-results li { display: block; padding: 14px 0; border-bottom: 1px solid #e5e7eb; }
+.document-results h2 { font-size: 1rem; overflow-wrap: anywhere; }
+.project-controls .project-action { margin: 0; }
+.project-row > div { min-width: 0; overflow-wrap: anywhere; }

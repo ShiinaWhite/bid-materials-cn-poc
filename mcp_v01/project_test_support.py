@@ -14,7 +14,7 @@ from test_v01 import FakeOcr
 from test_p05 import MemoryDowse
 from jty_materials import manager
 
-BASE = Path(__file__).resolve().parents[1] / 'runs/project-center'
+BASE = Path(__file__).resolve().parents[1] / 'runs/large-document/project-center'
 
 
 class ProjectFixture(unittest.TestCase):

@@ -99,6 +99,33 @@ def page_project_edit(req, ctx):
     return html_response(projects.edit_page(ctx.config, int(req.params['pid'])))
 
 
+@route('GET', r'/project/(?P<pid>\d+)/search')
+def page_project_search(req, ctx):
+    return html_response(projects.search_page(ctx.config, int(req.params['pid']), req.query))
+
+
+@route('GET', r'/api/project/(?P<pid>\d+)/documents')
+def api_project_documents(req, ctx):
+    # Progress commits are brief and frequent. Retry a generation conflict
+    # locally so ordinary polling does not emit spurious HTTP/console errors.
+    import time
+    for attempt in range(3):
+        try:
+            rows = projects.Documents(ctx.config).status(int(req.params['pid']))
+            break
+        except RuntimeError as error:
+            if 'RETRY:' not in str(error) or attempt == 2:
+                raise
+            time.sleep(.02)
+    return json_response(200, dict(items=[dict(project_file_id=d['project_file_id'], status=d['status'],
+        label=projects.document_state(d), index_status=d['index_status']) for d in rows]))
+
+
+@route('POST', r'/api/project/document/(?P<action>extract|retry|rebuild)')
+def api_project_document_write(req, ctx):
+    return json_response(*projects.write_api(ctx.config, req, 'project.document.' + req.params['action']))
+
+
 @route('GET', r'/project/(?P<pid>\d+)/upload')
 def page_project_upload(req, ctx):
     return html_response(projects.upload_page(ctx.config, int(req.params['pid'])))

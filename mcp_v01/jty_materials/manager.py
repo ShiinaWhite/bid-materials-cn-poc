@@ -69,10 +69,14 @@ class Supervisor:
         self.c = config
         self.d = Dowse(config)
         self.phase_ocr=None
+        from .project_documents import DocumentJobs
+        self.documents = DocumentJobs(self)
 
     def status(self):
         return {"running": True, "pid": os.getpid(), "watch_pid": self.d.watch.pid if self.d.watch else None,
-                "index": str(self.c.index_dir), "maintenance": self.c.maintenance_file.exists()}
+                "index": str(self.c.index_dir), "maintenance": self.c.maintenance_file.exists(),
+                "project_document_index": str(self.c.document_index),
+                "document_concurrency": 1, "document_queue": self.documents.queue.qsize()}
 
     def publish_generation(self):
         generation = self.c.state_dir / "generation.json"
@@ -130,11 +134,21 @@ class Supervisor:
         return True
 
     def job(self, action, payload):
+        if action.startswith('project.document.'):
+            try:
+                result = self.documents.execute(action, payload)
+            except Exception as error:
+                if action in ('project.document._finish','project.document._progress'):
+                    self.documents.fail(payload, error)
+                raise
+            if action == 'project.document._finish':
+                self.documents.publish_finished(payload['run_id'])
+            return result
         with FileLock(self.c.repository_root / "db/operation.lock"):
             resuming_migration = False
             # A previous failed recovery must be reconciled before any new write.
             if self.c.maintenance_file.exists():
-                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05'):
+                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05', 'migrate-v06'):
                     # The migration itself is the explicit repair for an older
                     # schema. Check evidence/DB first; it keeps maintenance until
                     # successful completion, just like every other job.
@@ -153,7 +167,7 @@ class Supervisor:
                     result = review_fact(self.c, payload)
                 elif action == "backup":
                     result = create_backup(self.c,**payload)
-                elif action in ('migrate-v03','migrate-v04','migrate-v05'):
+                elif action in ('migrate-v03','migrate-v04','migrate-v05','migrate-v06'):
                     from .store import Store
                     result=Store.migrate(self.c)
                     if resuming_migration:
@@ -252,6 +266,8 @@ class Supervisor:
             self.d.health()
             return {"healthy": True, **self.status()}
         if action == "shutdown":
+            if self.documents.capabilities:
+                raise RuntimeError('document extraction active; wait for completion before shutdown')
             self.d.stop()
             return {"stopped": True}
         return self.job(action, payload)
@@ -261,6 +277,7 @@ def serve(config):
     config.state_dir.mkdir(parents=True, exist_ok=True)
     with FileLock(config.state_dir / "manager.lock"):
         supervisor = Supervisor(config)
+        supervisor.documents.recover()
         config.log("manager.start", pid=os.getpid(), endpoint=endpoint(config))
         try:
             with Listener(endpoint(config), family="AF_PIPE", authkey=key(config, create=True)) as listener:

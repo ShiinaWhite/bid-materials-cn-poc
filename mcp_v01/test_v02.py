@@ -103,7 +103,7 @@ class V02Tests(unittest.TestCase):
   result=Store.migrate(c);self.assertTrue(result['changed']);self.assertFalse(Store.migrate(c)['changed'])
   with Store(c,readonly=True) as s:
    self.assertEqual([list(r) for r in s.db.execute('SELECT * FROM verification_event')],before)
-   self.assertEqual(set(r[0] for r in s.db.execute("SELECT name FROM sqlite_schema WHERE type='table'"))-tables,{'power_license_item','construction_qual_item','material_relation','project','project_file','project_material'})
+   self.assertEqual(set(r[0] for r in s.db.execute("SELECT name FROM sqlite_schema WHERE type='table'"))-tables,{'power_license_item','construction_qual_item','material_relation','project','project_file','project_material','project_document','project_document_run','project_document_unit'})
   self.assertEqual(Query(c).get_material(1)['verified_facts']['valid_until']['value'],old.EXPIRY)
  def test_three_mcp_tools_expose_typed_business_filter(self):
   mid=self.add('business_license');self.review(mid,'enterprise_name','测试企业')

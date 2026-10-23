@@ -17,7 +17,7 @@ def main():
     executable = Path(os.environ.get('P05_DOWSE_EXE', 'missing-dowse.exe')).resolve()
     if not executable.is_file():
         raise ValueError('Supply P05_DOWSE_EXE pointing to a real dowse executable; skipping is forbidden')
-    root = Path(__file__).resolve().parents[1]/'runs/project-center'
+    root = Path(__file__).resolve().parents[1]/'runs/large-document'
     run = root/('regression-'+dt.datetime.now().strftime('%Y%m%d-%H%M%S'))
     run.mkdir(parents=True)
     temp = root/'tmp'; temp.mkdir(exist_ok=True)

@@ -14,7 +14,7 @@ from jty_materials.projects import Projects, MAX_BYTES
 from webui import app, projects as ui, service, uploads, catalog
 
 
-class ProjectWebuiTests(ProjectFixture):
+class ProjectHttpFixture(ProjectFixture):
     def setUp(self):
         super().setUp()
         self.rpc=mock.patch.object(ui,'request',side_effect=lambda c,a,p,**kw:self.supervisor.job(a,p))
@@ -53,6 +53,8 @@ class ProjectWebuiTests(ProjectFixture):
             time.sleep(.05)
         self.fail('upload worker timeout')
 
+
+class ProjectWebuiTests(ProjectHttpFixture):
     def test_http_create_edit_reference_upload_download_archive_and_restore(self):
         status,result=self.post('create',name='HTTP项目');self.assertEqual(status,200);pid=result['result']['project_id']
         self.assertEqual(self.post('update',project_id=pid,name='HTTP更新',tenderer='测试招标人')[0],200)

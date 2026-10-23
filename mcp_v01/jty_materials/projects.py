@@ -215,6 +215,9 @@ def add_file(config, payload, actor):
                 s.db.execute('''INSERT INTO project_file(project_file_id,project_id,category,relative_path,filename,
                     extension,sha256,size_bytes,imported_at,imported_by) VALUES(?,?,?,?,?,?,?,?,?,?)''',
                     (fid, pid, category, relative, filename, ext[1:], sha, size, now(), actor))
+                s.document_write = True
+                s.db.execute('''INSERT INTO project_document(document_id,project_file_id,source_sha256,status,created_at,updated_at)
+                    VALUES(?,?,?,'pending',?,?)''', (uuid.uuid4().hex, fid, sha, now(), now()))
                 s.db.execute('UPDATE project SET updated_at=? WHERE project_id=?', (now(), pid))
                 audit(s.db, actor, 'project.file.add', 'project_file', fid,
                       dict(project_id=pid, filename=filename, category=category, relative_path=relative, sha256=sha, size_bytes=size))

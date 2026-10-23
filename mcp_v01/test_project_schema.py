@@ -17,9 +17,9 @@ from jty_materials.doctor import check_files
 class ProjectSchemaTests(ProjectFixture):
     def test_initialization_only_three_project_tables_and_version(self):
         with Store(self.c, readonly=True) as s:
-            self.assertEqual(SCHEMA_VERSION, 'jty-mcp-0.5.0')
+            self.assertEqual(SCHEMA_VERSION, 'jty-mcp-0.6.0')
             self.assertEqual({r[0] for r in s.db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'project%' ")},
-                             {'project','project_file','project_material'})
+                             {'project','project_file','project_material','project_document','project_document_run','project_document_unit'})
         self.assertEqual(Projects(self.c).list()['total'], 0)
 
     def test_identity_file_and_ledger_guards_even_external_sql(self):

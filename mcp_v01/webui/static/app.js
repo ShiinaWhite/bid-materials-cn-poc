@@ -6,6 +6,30 @@ function $all(sel, root) { return Array.from((root || document).querySelectorAll
 
 /* Project files use their own endpoint and job registry, without OCR/import. */
 document.addEventListener("DOMContentLoaded", () => {
+  const project = document.querySelector('[data-document-project]');
+  if (project) {
+    let wasBusy = false;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/project/${project.dataset.documentProject}/documents`);
+        if (!response.ok) throw new Error('status unavailable');
+        const data = await response.json();
+        let busy = false;
+        for (const item of data.items) {
+          const node = document.querySelector(`[data-document-file="${item.project_file_id}"]`);
+          if (node) node.textContent = '文档内容：' + item.label;
+          busy ||= ['queued', 'processing'].includes(item.status);
+        }
+        if (wasBusy && !busy) { window.location.reload(); return; }
+        wasBusy = busy;
+        if (busy) setTimeout(poll, 1500);
+      } catch (_) {
+        // A transient read conflict should not leave a stale processing screen.
+        setTimeout(poll, 2500);
+      }
+    };
+    poll();
+  }
   for (const form of document.querySelectorAll(".project-action")) {
     const fileInput = form.querySelector('input[type="file"]');
     const drop = form.querySelector(".project-drop");
@@ -442,7 +466,7 @@ function initDoctor() {
     if (data.state === "done" && data.result) {
       const r = data.result;
       if (r.error) { box.textContent = "体检失败：" + r.error; return true; }
-      const okAll = r.integrity === "ok" && !r.foreign_key_errors && !r.file_errors && !r.project_file_errors && !r.projection_errors;
+      const okAll = r.integrity === "ok" && !r.foreign_key_errors && !r.file_errors && !r.project_file_errors && !r.projection_errors && !r.project_document_errors;
       box.innerHTML = "";
       const line = (label, value, good) => {
         const chip = document.createElement("span");
@@ -458,6 +482,7 @@ function initDoctor() {
         line("外键错误", String(r.foreign_key_errors), !r.foreign_key_errors),
         line("素材文件校验", r.files_checked + " 个文件，错误 " + r.file_errors, !r.file_errors),
         line("项目文件校验", r.project_files_checked + " 个文件，错误 " + r.project_file_errors, !r.project_file_errors),
+        line("项目文档内容", String(r.project_documents?.documents ?? 0) + " 份文档", !r.project_document_errors),
         line("检索投影校验", r.projections_checked + " 个投影，错误 " + r.projection_errors, !r.projection_errors),
         line("全文索引文档数", String(r.index_docs), Number(r.index_docs) > 0),
       );
