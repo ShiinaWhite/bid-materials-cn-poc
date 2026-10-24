@@ -4,7 +4,36 @@ from decimal import Decimal,InvalidOperation
 from .common import normalize
 from .fields import ALLOWED,PERSON_TYPES,PERFORMANCE_TYPES,FINANCE_TYPES,field_spec,validate_value,allowed_field
 
-def extract_candidates(text,typ,context):
+def _license_values(raw):
+    """Match normalized labels, but return spans from the immutable OCR text."""
+    chars=[]; offsets=[]
+    for pos,char in enumerate(raw):
+        for normalized in normalize(char):
+            chars.append(normalized);offsets.append(pos)
+    text=''.join(chars)
+    def evidence(match):return raw[offsets[match.start()]:offsets[match.end()-1]+1]
+    # A line label, not a mention of a name in the scope/footer text. Stop at
+    # adjacent license labels when OCR puts multiple columns on one line.
+    stop=r'(?:类型|法定代表人|注册资本|成立日期|住所|经营范围|登记机关)'
+    for m in re.finditer(r'(?:^|\n)[ \t]*(?:企业[ \t]*)?名[ \t]*称[ \t]*[:：]?[ \t]*\n?[ \t]*([^\n]{2,160})',text):
+        value=re.split(stop,m[1])[0]
+        value=re.sub(r'\s+','',value).strip(':：')
+        if (re.fullmatch(r'[\u4e00-\u9fffA-Za-z0-9()·]{4,120}',value)
+                and re.search(r'(?:公司|企业|合作社|事务所|中心|厂|商行)$',value)
+                and not any(s in value for s in ('营业执照','登记机关','公示系统','网址'))):
+            yield 'enterprise_name',value,evidence(m)
+    label=r'统\s*一\s*社\s*会\s*信\s*用\s*代\s*码'
+    for m in re.finditer(label+r'\s*[:：]?\s*((?:[0-9A-Z][ \t]*){18})(?![ \t]*[0-9A-Z])',text):
+        yield 'unified_social_credit_code',re.sub(r'\s+','',m[1]),evidence(m)
+    label=r'成\s*立\s*日\s*期'
+    for m in re.finditer(label+r'\s*[:：]?\s*(\d{4})\s*[年/.-]\s*(\d{1,2})\s*[月/.-]\s*(\d{1,2})\s*日?',text):
+        try:value=dt.date(*map(int,m.groups())).isoformat()
+        except ValueError:continue
+        yield 'established_on',value,evidence(m)
+
+
+def extract_candidates(text,typ,context=None):
+    raw_text=text;context=context or {}
     text=normalize(text);lines=text.splitlines();seen=set()
     def emit(field,value,raw):
         if not allowed_field(typ,field):return
@@ -24,10 +53,17 @@ def extract_candidates(text,typ,context):
         for y,m,d in re.findall(r'(\d{4})\s*[年/-]\s*(\d{1,2})\s*[月/-]\s*(\d{1,2})',line):
             try:date=dt.date(int(y),int(m),int(d)).isoformat()
             except ValueError:continue
-            if any(w in line for w in ('有效期至','有效期:至','有效期限至','有效期：至')):yield from emit('valid_until',date,line)
+            if any(w in line for w in ('有效期','有效期限')) and ('至' in line or '有效期:' in line or '有效期：' in line):
+                # For a range, its final date is the expiry, never the start.
+                dates=re.findall(r'(\d{4})\s*[年/-]\s*(\d{1,2})\s*[月/-]\s*(\d{1,2})',line)
+                try:expiry=dt.date(*map(int,dates[-1])).isoformat()
+                except ValueError:continue
+                yield from emit('valid_until',expiry,line)
             elif '发证日期' in line or '颁发日期' in line:yield from emit('issue_date',date,line)
             elif '登记日期' in line:yield from emit('registration_date',date,line)
-    if typ in PERFORMANCE_TYPES:
+    if typ=='business_license':
+        for field,value,evidence in _license_values(raw_text):yield from emit(field,value,evidence)
+    elif typ in PERFORMANCE_TYPES:
         if context.get('project_name'):yield from emit('project_name',context['project_name'],'source directory hint (unverified): '+context['project_name'])
         yield from labeled('client',[r'发包人(?:名称)?',r'甲方(?:名称)?',r'建设单位'])
         yield from labeled('contract_no',[r'合同编号',r'合同号'])
@@ -39,6 +75,9 @@ def extract_candidates(text,typ,context):
                 try:value=int(Decimal(m[1].replace(',',''))*(1000000 if m[2]=='万元' else 100))
                 except InvalidOperation:continue
                 yield from emit('contract_amount',value,m[0])
+        # Retain the original explicit currency amount rule for all entrances.
+        for m in re.finditer(r'[¥￥]\s*([\d,]+\.\d{2})',text):
+            yield from emit('contract_amount',int(Decimal(m[1].replace(',',''))*100),m[0])
         yield from labeled('location',[r'工程地点',r'项目地点',r'建设地点'])
         for label,field in [('开工日期','start_date'),('竣工日期','completion_date'),('签订日期','contract_date')]:
             for m in re.finditer(label+r'[^\d\n]{0,10}(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})',text):
@@ -108,7 +147,10 @@ def business_metadata(db,mid,material_type,original_ids):
     people=[dict(r) for r in db.execute('''SELECT p.person_id,p.person_code,p.name,p.job_title,p.identity_status,mp.role_on_material,mp.relation_status,mp.evidence_file_id
       FROM material_person mp JOIN person p USING(person_id) WHERE mp.material_id=?''',(mid,)) if r['evidence_file_id'] in original_ids]
     relations=[dict(r) for r in db.execute('SELECT * FROM material_relation WHERE material_id=? OR related_material_id=?',(mid,mid))]
-    source=db.execute("SELECT detail_json FROM audit_log WHERE action='material.source_context' AND entity_id=? ORDER BY log_id DESC LIMIT 1",(mid,)).fetchone()
+    source=None
+    for row in db.execute("SELECT detail_json FROM audit_log WHERE action='material.source_context' AND entity_id=? ORDER BY log_id DESC",(mid,)):
+        if json.loads(row[0]).get('original_file_id') in original_ids:
+            source=row;break
     profile=None
     for record in db.execute("SELECT detail_json FROM audit_log WHERE action='material.document_profile' AND entity_id=? ORDER BY log_id DESC",(mid,)):
         item=json.loads(record[0])

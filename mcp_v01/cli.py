@@ -38,7 +38,9 @@ def main():
             p.add_argument("--material-id", type=int, required=True)
     review = commands.add_parser("review"); review.add_argument("--record", required=True)
     candidate = commands.add_parser('candidates');candidate.add_argument('--record',required=True)
-    reextract = commands.add_parser('reextract');reextract.add_argument('--record',required=True)
+    reextract = commands.add_parser('reextract')
+    reextract.add_argument('--material-id',type=int,required=True)
+    reextract.add_argument('--actor',required=True)
     restore = commands.add_parser("restore"); restore.add_argument("--backup", required=True); restore.add_argument("--target", required=True); restore.add_argument("--runtime-root")
     inspect = commands.add_parser("get"); inspect.add_argument("--material-id", type=int, required=True); inspect.add_argument("--text", action="store_true")
     search = commands.add_parser("search")
@@ -90,7 +92,7 @@ def main():
     if args.command=='candidates':
         return request(config,'candidates',json.loads(Path(args.record).read_text(encoding='utf-8')))
     if args.command=='reextract':
-        return request(config,'reextract',json.loads(Path(args.record).read_text(encoding='utf-8')))
+        return request(config,'reextract_current',dict(material_id=args.material_id,actor=args.actor))
     if args.command == "client-config":
         server = {"command": sys.executable, "args": ["-B", str(Path(__file__).with_name("serve.py")), "--config", str(config.path)]}
         text = "[mcp_servers.jty_materials]\ncommand = " + json.dumps(server["command"]) + "\nargs = " + json.dumps(server["args"]) + "\nenabled_tools = [\"search_materials\", \"get_material\", \"get_material_text\"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 120\n"

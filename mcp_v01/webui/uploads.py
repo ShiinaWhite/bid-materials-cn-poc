@@ -5,6 +5,7 @@ offline CLI (staging -> SHA -> duplicate handling -> OCR -> version registration
 """
 import datetime as dt
 import hashlib
+import re
 import threading
 import time
 import uuid
@@ -16,6 +17,17 @@ from jty_materials.store import Store
 from . import catalog
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+
+def source_context(filename, title):
+    """Unverified display hints only; never accept browser paths/metadata."""
+    filename = re.split(r'[\\/]', filename)[-1].strip()
+    filename = ''.join(c for c in filename if ord(c) >= 32)[:240] or 'upload'
+    title = (title or '').strip()
+    fallback = Path(filename).stem.strip() or '上传资料'
+    return dict(source_origin='webui', source_filename=filename,
+                source_relative_path=filename, source_title=title or fallback,
+                title_origin='user' if title else 'filename_fallback')
 
 
 def staging_root(config):
@@ -73,7 +85,7 @@ def find_duplicate_original(config, sha256):
 class UploadJob:
     def __init__(self, job_id, mode, filename, size, params):
         self.id = job_id
-        self.mode = mode  # import | replace
+        self.mode = mode  # import | replace | reextract
         self.filename = filename
         self.size = size
         self.params = params
@@ -118,6 +130,13 @@ class UploadManager:
         with self.sem:
             try:
                 job.state = "running"
+                if job.mode == 'reextract':
+                    job.step = '正在重新识别当前文件'
+                    receipt = request(self.c, 'reextract_current',
+                                      dict(material_id=int(job.params['material_id']), actor=job.params['actor']), timeout=1800)
+                    job.result = dict(material_id=receipt['material_id'], receipt=receipt)
+                    job.state = 'done'; job.step = '完成'
+                    return
                 source = Path(staged_path)
                 suffix = source.suffix.lower() if source.suffix else Path(job.filename).suffix.lower()
                 if suffix not in catalog.UPLOAD_EXTS:
@@ -140,10 +159,13 @@ class UploadManager:
                         return
                 job.step = "正在识别资料并保存"
                 payload = {"source": str(source), "actor": job.params["actor"]}
+                context = source_context(job.filename, job.params.get('title'))
+                payload['source_metadata'] = context
                 if job.mode == "import":
-                    payload.update(kind="material", subtype=job.params["subtype"], title=job.params["title"])
+                    payload.update(kind="material", subtype=job.params["subtype"], title=context['source_title'])
                 else:
                     payload["material_id"] = int(job.params["material_id"])
+                    context['title_origin'] = 'preserved'
                 receipt = request(self.c, job.mode, payload, timeout=1800)
                 job.state = "done"
                 job.step = "完成"
@@ -159,7 +181,10 @@ class UploadManager:
             finally:
                 job.finished_at = time.time()
                 try:
-                    Path(staged_path).unlink(missing_ok=True)
+                    if staged_path is not None:
+                        Path(staged_path).unlink(missing_ok=True)
+                    if 'source' in locals():
+                        source.unlink(missing_ok=True)
                 except OSError:
                     pass
                 self.c.log("webui.upload_job", job=job.id, mode=job.mode, state=job.state,

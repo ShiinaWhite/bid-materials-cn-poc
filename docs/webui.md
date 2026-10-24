@@ -1,6 +1,6 @@
 # WebUI
 
-WebUI 是资料库的本地浏览器界面（stdlib HTTP 服务，无第三方 Web 框架），当前版本 **v0.4.3**（版本号独立于 jty-mcp 存储 schema）。
+WebUI 是资料库的本地浏览器界面（stdlib HTTP 服务，无第三方 Web 框架），当前版本 **v0.6.1**（版本号独立于 jty-mcp 存储 schema，本轮 schema 保持 `jty-mcp-0.6.0`）。
 
 缩略图依赖：PDF 缩略图用 PyMuPDF、图片缩略图用 Pillow（均为函数级导入，包缺失时自动跳过缩略图并在日志记录 `webui.thumb_failed`，页面其余功能不受影响）。
 
@@ -28,6 +28,16 @@ python -B mcp_v01/webui_server.py --host 127.0.0.1 --port 8800
 | 反馈 `/feedback` | 用户反馈提交与反馈记录查看 |
 
 普通上传和更新原件支持：**PDF / PNG / JPG / JPEG**，单文件不超过 200MB。DOCX / XLSX 暂不支持普通上传，`.doc` 明确不支持；文件选择器、API 和后台任务使用相同白名单。内部 PhaseOcr 的 Office 原生抽取能力保留，但不等于普通 import 支持 Office。完整 DOCX、大 PDF 与历史标书能力属于后续阶段。
+
+资料名称可选：填写时保留用户标题，留空时以文件名 stem 保存非空标题。营业执照识别到唯一企业名称候选后，列表和详情可显示“企业名称 营业执照”的自动建议；详情明确标注其显示元数据属性，不代表企业名称已人工确认。企业名称、统一社会信用代码、成立日期均只产生“待完善”候选，仍须在“完善资料”中核对；对话框可查看原始识别依据及当前原件。
+
+“重新识别”不需要再上传文件：填写经办人后，异步交由 manager 从 DB 查找当前原件，校验版本及 SHA。完整、校验通过的当前 OCR 可直接复用；不完整时才重新 OCR。仅替换待完善候选，不创建 Material 或原件版本，也不删除已核验事实。CLI 同样只接受资料 ID 和经办人（旧 `reextract --record` 用户入口已改为此方式）：
+
+```powershell
+python -B mcp_v01/cli.py --config config/materials.json reextract --material-id 123 --actor "实际经办人"
+```
+
+营业执照不再突出普通证书式“有效期未记录”；历史有效期字段和投标有效性规则保留，不自动推断长期有效。公开 fixture、OCR 样例及 QA 截图仅使用合成企业标识和测试日期，生产只读调查在公开报告中仅保留是否命中的结论。完整验收见 [v0.6.1 修复报告](../MATERIAL_UPLOAD_EXTRACTION_REPAIR_REPORT.md)。
 
 OCR 或数据库提交前失败不会发布新文件版本。提交后若索引/回复失败，已提交版本和审计回执会保留；请先查看资料及审计，不要把报错视为未写入。办公室操作说明见 [office-use.md](office-use.md)。
 

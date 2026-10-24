@@ -113,7 +113,19 @@ def _hints_from_detail(detail):
                 value = cands[0].get("value")
         if value is not None and str(value).strip():
             hints[field] = value
+    if detail.get('material_type') == 'business_license':
+        hints.update(license_title_hint(
+            [c['value'] for c in (detail.get('candidate_fields') or {}).get('enterprise_name', [])],
+            detail.get('source_context')))
     return hints
+
+
+def license_title_hint(values, context):
+    """A unique OCR name may suggest a display title only for a fallback title."""
+    names = {str(v).strip() for v in values if v and str(v).strip()}
+    if context and context.get('title_origin') == 'filename_fallback' and len(names) == 1:
+        return {'license_title_suggestion': next(iter(names)) + ' 营业执照'}
+    return {}
 
 
 def display_name(material_type, title, *, persons=(), hints=None, cert_no=None):
@@ -121,6 +133,8 @@ def display_name(material_type, title, *, persons=(), hints=None, cert_no=None):
     mtype = material_type or ""
     hints = hints or {}
     clean = clean_title(title)
+    if mtype == 'business_license':
+        return hints.get('license_title_suggestion') or title
     year = hints.get("fiscal_year") or hints.get("year")
     year = str(year) if year else None
 

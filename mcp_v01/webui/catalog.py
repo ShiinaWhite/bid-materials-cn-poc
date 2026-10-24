@@ -98,7 +98,7 @@ FIELD_HINT = {
 # other type "有效期" is NOT "not recorded yet" — the concept does not apply,
 # so the UI never shows a validity row/column for them.
 HAS_VALIDITY = {
-    "business_license", "safety_prod_license", "power_facility_license",
+    "safety_prod_license", "power_facility_license",
     "construction_qual", "iso_cert", "tax_credit", "tax_payment_cert",
     "honor_cert", "credit_report", "enterprise_status",
     "person_education", "person_title_cert", "person_registered_cert",
@@ -203,7 +203,7 @@ TYPE_FIELDS = {
 }
 
 # Fields that make sense to show on list rows when present (verified values only).
-LIST_VALIDITY_TYPES = {"business_license", "safety_prod_license", "power_facility_license",
+LIST_VALIDITY_TYPES = { "safety_prod_license", "power_facility_license",
                        "construction_qual", "iso_cert", "person_education", "person_title_cert",
                        "person_registered_cert", "person_special_op", "person_safety_cert",
                        "person_social_security", "person_document", "tax_credit"}

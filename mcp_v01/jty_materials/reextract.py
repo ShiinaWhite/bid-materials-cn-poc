@@ -7,6 +7,56 @@ from .workflow import audit,rebuild_projections
 from .phase_ocr import PhaseOcr
 from .business import extract_candidates
 
+
+def current_record(config, payload):
+    """Manager-only resolution of current evidence; clients supply no paths/text."""
+    if (not isinstance(payload,dict) or set(payload)!={'material_id','actor'}
+            or type(payload['material_id']) is not int or payload['material_id']<1
+            or not isinstance(payload['actor'],str) or not payload['actor'].strip()):
+        raise ValueError('material_id and actor only required')
+    with Store(config,readonly=True) as s:
+        original=s.db.execute("SELECT file_id,sha256 FROM material_file WHERE material_id=? AND role='original' AND is_current=1",(payload['material_id'],)).fetchone()
+        search=s.db.execute("SELECT file_id FROM material_file WHERE material_id=? AND role='search_text' AND is_current=1",(payload['material_id'],)).fetchone()
+        if not original or not search:raise ValueError('current original/search file not found')
+        return dict(material_id=payload['material_id'],actor=payload['actor'].strip(),
+            evidence_file_id=original['file_id'],evidence_sha256=original['sha256'],expected_search_file_id=search['file_id'],
+            operation_id=uuid.uuid4().hex,reason='重新整理当前原件中的可识别信息；仅生成待完善候选')
+
+
+def existing_ocr(config, record):
+    """Reuse complete current OCR bytes; no need to rerun the native engine.
+
+    This adapter is constructed by the manager under its serialization lock.
+    Both the current original and every reused derivative are checked again
+    when reextract asks for document(), before any new run is committed.
+    """
+    with Store(config,readonly=True) as s:
+        original=s.db.execute("SELECT version_id FROM material_file WHERE file_id=? AND material_id=? AND role='original' AND is_current=1",(record['evidence_file_id'],record['material_id'])).fetchone()
+        if not original:raise ValueError('current original changed')
+        run=s.db.execute("SELECT status,params_json FROM extraction_run WHERE source_file_id=? AND extractor='umi-ocr+typed-candidate-rules' ORDER BY run_id DESC LIMIT 1",(record['evidence_file_id'],)).fetchone()
+        options=json.loads(run['params_json']) if run else {}
+        if not run or run['status']!='succeeded' or options.get('text_status') not in (None,'complete') or options.get('errors'):return None
+        files={r['role']:dict(r) for r in s.db.execute("SELECT * FROM material_file WHERE material_id=? AND is_current=1 AND role IN ('ocr_raw_text','ocr_raw_jsonl','search_text')",(record['material_id'],))}
+    if len(files)!=3 or any(f['version_id']!=original['version_id'] for f in files.values()):return None
+    def checked():
+        for f in files.values():
+            if digest(safe_path(config.repository_root,f['relative_path']))!=f['sha256']:
+                raise ValueError('current OCR derivative checksum mismatch')
+        return safe_path(config.repository_root,files['ocr_raw_text']['relative_path']).read_text(encoding='utf-8')
+    raw=checked()
+    if not raw.strip():return None
+    class ExistingOcr:
+        def start(self):pass
+        def stop(self):pass
+        def document(self,copy):
+            if digest(copy)!=record['evidence_sha256']:raise ValueError('original changed during OCR reuse')
+            checked()
+            result={key:str(safe_path(config.repository_root,files[role]['relative_path'])) for key,role in [('raw','ocr_raw_text'),('jsonl','ocr_raw_jsonl'),('search','search_text')]}
+            result['options']=dict(text_status='complete',errors=[],ocr_engine_rerun=False,
+                method='reuse_current_ocr',reused_files={role:dict(file_id=f['file_id'],sha256=f['sha256']) for role,f in files.items()})
+            return result
+    return ExistingOcr()
+
 def reextract(config,record,ocr_factory=None,defer_projection=False):
     keys={'material_id','evidence_file_id','evidence_sha256','expected_search_file_id','operation_id','actor','reason'}
     if not isinstance(record,dict) or set(record)!=keys:raise ValueError('explicit current evidence, search file, actor, reason and operation ID required')
@@ -25,7 +75,7 @@ def reextract(config,record,ocr_factory=None,defer_projection=False):
             return d['receipt']
         search=s.db.execute("SELECT file_id FROM material_file WHERE material_id=? AND role='search_text' AND is_current=1",(record['material_id'],)).fetchone()
         if not search or search[0]!=record['expected_search_file_id']:raise ValueError('current derivative changed since repair plan')
-        ctx=s.db.execute("SELECT detail_json FROM audit_log WHERE action='material.source_context' AND entity_id=? ORDER BY log_id DESC LIMIT 1",(record['material_id'],)).fetchone()
+        ctx=s.db.execute("SELECT detail_json FROM audit_log WHERE action='material.source_context' AND entity_id=? AND json_extract(detail_json,'$.original_file_id')=? ORDER BY log_id DESC LIMIT 1",(record['material_id'],original['file_id'])).fetchone()
         context=json.loads(ctx[0]) if ctx else {}
     task=uuid.uuid4().hex;stage=config.state_dir/'staging'/('ocr-'+task);stage.mkdir(parents=True,exist_ok=False)
     source=safe_path(config.repository_root,original['relative_path']);copy=stage/('original'+source.suffix)
@@ -58,7 +108,7 @@ def reextract(config,record,ocr_factory=None,defer_projection=False):
             s.db.execute("UPDATE material_file SET is_current=0 WHERE material_id=? AND role IN ('ocr_raw_text','ocr_raw_jsonl','search_text') AND is_current=1",(record['material_id'],))
             files={role:s.register_file(record['material_id'],p,role,original['version_id']) for role,p in paths.items()}
             options=dict(result['options'],text_status=text_status,derived_files=files,derivative_task=task,original_sha256=original['sha256'])
-            run=s.db.execute("INSERT INTO extraction_run(material_id,source_file_id,extractor,extractor_version,params_json,run_at,status) VALUES(?,?,'umi-ocr+typed-candidate-rules','2.1.5/v0.4-reextract',?,?,?) RETURNING run_id",(record['material_id'],original['file_id'],json.dumps(options,ensure_ascii=False),now(),'succeeded' if text_status=='complete' else 'partial')).fetchone()[0]
+            run=s.db.execute("INSERT INTO extraction_run(material_id,source_file_id,extractor,extractor_version,params_json,run_at,status) VALUES(?,?,'umi-ocr+typed-candidate-rules','2.1.5/v0.6.1-reextract',?,?,?) RETURNING run_id",(record['material_id'],original['file_id'],json.dumps(options,ensure_ascii=False),now(),'succeeded' if text_status=='complete' else 'partial')).fetchone()[0]
             s.db.execute("UPDATE extracted_fact SET review_status='superseded',review_note='Machine OCR retry for same original; previous candidate retained in history' WHERE material_id=? AND review_status='pending'",(record['material_id'],))
             for field,vt,r,n in values:s.db.execute('INSERT INTO extracted_fact(run_id,material_id,field_name,value_type,raw_value,normalized_value,evidence_span) VALUES(?,?,?,?,?,?,?)',(run,record['material_id'],field,vt,r,n,r[:1000]))
             s.db.execute('UPDATE search_projection SET search_file_id=?,sha256=? WHERE material_id=?',(files['search_text'],digest(paths['search_text']),record['material_id']))

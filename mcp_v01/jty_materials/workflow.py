@@ -1,5 +1,4 @@
 """Offline, serialized material import/version/review operations."""
-from decimal import Decimal
 import json
 from pathlib import Path
 import re
@@ -10,23 +9,6 @@ from .common import atomic_write, digest, normalize, now, safe_path
 from .ocr import Ocr
 from .store import Store
 from .fields import resolve_type,PERSON_TYPES,PERFORMANCE_TYPES,TYPE_TABLE,CERTIFICATES
-
-
-def candidate_values(text, kind):
-    for line in text.splitlines():
-        normal = normalize(line)
-        if kind == "certificate" and any(word in normal for word in ("有效", "期限")):
-            dates = re.findall(r"(\d{4})\s*[年/-]\s*(\d{1,2})\s*[月/-]\s*(\d{1,2})", normal)
-            if dates:
-                year, month, day = map(int, dates[-1])
-                import datetime
-                yield "valid_until", "date", line, datetime.date(year, month, day).isoformat()
-                return
-        elif kind == "contract":
-            value = re.search(r"[¥￥]\s*([\d,]+\.\d{2})", normal)
-            if value:
-                yield "contract_amount", "amount", line, str(int(Decimal(value[1].replace(",", ""))*100))
-                return
 
 
 def audit(db, actor, action, entity, entity_id, detail):
@@ -100,11 +82,8 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
         detected='software_copyright' if '计算机软件著作权登记证书' in header else 'patent' if '实用新型专利证书' in header or '发明专利证书' in header else None
         if detected:
             source_metadata=dict(source_metadata,inferred_type_before=type_code,type_inference_basis='explicit title in original OCR, still unverified');type_code=detected;certificate_kind=None
-    if source_metadata is None:
-        candidates = list(candidate_values(text, kind))
-    else:
-        from .business import extract_candidates
-        candidates=list(extract_candidates(text,type_code,source_metadata))
+    from .business import extract_candidates
+    candidates=list(extract_candidates(text,type_code,source_metadata))
     with Store(config) as store:
         with store.db:
             store.db.execute("BEGIN IMMEDIATE")
@@ -142,7 +121,7 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
                 relative_stage = Path(result[key]).relative_to(stage)
                 files[role] = store.register_file(material_id, target / relative_stage, role, version)
             run = store.db.execute("""INSERT INTO extraction_run(material_id,source_file_id,extractor,extractor_version,params_json,run_at,status)
-                VALUES(?,?,'umi-ocr+typed-candidate-rules','2.1.5/v0.4',?,?,?) RETURNING run_id""",
+                VALUES(?,?,'umi-ocr+typed-candidate-rules','2.1.5/v0.6.1',?,?,?) RETURNING run_id""",
                 (material_id, files["original"], json.dumps(result["options"], ensure_ascii=False), now(),'partial' if result['options'].get('text_status') in ('metadata_only','partial') else 'succeeded')).fetchone()[0]
             for field, value_type, raw, normalized in candidates:
                 store.db.execute("""INSERT INTO extracted_fact(run_id,material_id,field_name,value_type,raw_value,normalized_value,evidence_span)
@@ -169,7 +148,7 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
                         pid=store.db.execute("INSERT INTO person(person_code,name,name_norm,status,identity_status,notes,created_at,updated_at) VALUES(?,?,?,'unknown','candidate',?,?,?) RETURNING person_id",(person_key,person_label,normalize(person_label),'Directory label only; not human-verified identity',now(),now())).fetchone()[0]
                     else:pid=person[0]
                     store.db.execute("INSERT INTO material_person(material_id,person_id,role_on_material,is_primary,relation_status,evidence_file_id) VALUES(?,?,'holder',1,'candidate',?) ON CONFLICT(material_id,person_id,role_on_material) DO UPDATE SET evidence_file_id=excluded.evidence_file_id,relation_status='candidate'",(material_id,pid,files['original']))
-            if type_code in PERSON_TYPES and old_people and not source_metadata:
+            if type_code in PERSON_TYPES and old_people and not (source_metadata and source_metadata.get('person_label') and source_metadata.get('person_relation_status')=='candidate'):
                 store.db.execute("UPDATE material_person SET evidence_file_id=?,relation_status='relation_pending' WHERE material_id=?",(files['original'],material_id))
                 audit(store.db,actor,'person.relation_version_pending','material',material_id,dict(previous=old_people,new_original_file_id=files['original'],reason='original replaced; prior identity relation retained only as pending, not reverified'))
     if not defer_projection:rebuild_projections(config)

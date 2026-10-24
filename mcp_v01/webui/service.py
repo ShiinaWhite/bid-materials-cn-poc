@@ -120,6 +120,18 @@ def summarize(config, ids):
             SELECT material_id, rating FROM certificate_detail
             WHERE material_id IN ({marks}) AND rating IS NOT NULL AND rating<>''""", ids):
             ratings[r["material_id"]] = r["rating"]
+        license_names = {}
+        for r in _rows(s.db, f"""SELECT e.material_id,e.normalized_value FROM extracted_fact e
+            JOIN extraction_run x USING(run_id) JOIN material_file f ON f.file_id=x.source_file_id
+            WHERE e.material_id IN ({marks}) AND e.field_name='enterprise_name'
+            AND e.review_status IN ('pending','accepted') AND f.role='original' AND f.is_current=1""", ids):
+            license_names.setdefault(r['material_id'], []).append(r['normalized_value'])
+        contexts = {}
+        for r in _rows(s.db, f"""SELECT a.entity_id,a.detail_json FROM audit_log a
+            JOIN material_file f ON f.file_id=json_extract(a.detail_json,'$.original_file_id')
+            WHERE a.entity_id IN ({marks}) AND a.action='material.source_context'
+            AND f.role='original' AND f.is_current=1 ORDER BY a.log_id""", ids):
+            contexts[r['entity_id']] = json.loads(r['detail_json'])
     result = []
     today = dt.date.today().isoformat()
     from . import display as display_names
@@ -130,6 +142,8 @@ def summarize(config, ids):
         people = persons.get(mid, [])
         validity = dates.get(mid)
         hint_map = {f: hints.get((mid, f)) for f in hint_fields if hints.get((mid, f)) is not None}
+        if row['material_type'] == 'business_license':
+            hint_map.update(display_names.license_title_hint(license_names.get(mid, []), contexts.get(mid)))
         names = [p["name"] for p in people]
         pf = perf.get(mid, {})
         human_year = years.get(mid)

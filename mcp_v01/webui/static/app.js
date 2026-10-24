@@ -214,7 +214,6 @@ function initUploadForm(form) {
     const subtypeEl = form.querySelector('select[name="subtype"]');
     const titleEl = form.querySelector('input[name="title"]');
     if (mode === "import" && subtypeEl && !subtypeEl.value) { alert("请选择材料类别"); return; }
-    if (mode === "import" && titleEl && !titleEl.value.trim()) { alert("请填写材料标题"); return; }
 
     submit.disabled = true;
     progress.classList.remove("hidden");
@@ -274,6 +273,37 @@ function valueInput(field) {
     ]);
   }
   return el("input", { class: "input", type: "text", maxlength: "4000" });
+}
+
+function initReextract() {
+  const button = $('[data-reextract]');
+  if (!button) return;
+  const box = $('.detail-titlebox');
+  const status = $('[data-reextract-status]');
+  button.addEventListener('click', async () => {
+    const actor = prompt('不重新上传文件，只重新整理当前文件中的可识别信息。\n请填写经办人（将写入审计记录）：');
+    if (!actor || !actor.trim()) return;
+    button.disabled = true;
+    status.textContent = '正在重新识别…';
+    try {
+      const response = await fetch('/api/reextract', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({material_id: Number(box.dataset.mid), actor: actor.trim()})});
+      let job = await response.json();
+      if (!response.ok) throw new Error(job.error || '无法开始重新识别');
+      while (job.state !== 'done' && job.state !== 'error') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const poll = await fetch('/api/jobs/' + job.job_id);
+        job = await poll.json();
+        if (!poll.ok) throw new Error(job.error || '无法读取识别进度');
+        status.textContent = job.step || '正在重新识别…';
+      }
+      if (job.state === 'error') throw new Error(job.error);
+      location.reload();
+    } catch (error) {
+      status.textContent = '重新识别失败：' + error.message;
+      button.disabled = false;
+    }
+  });
 }
 
 function initReviewDialog() {
@@ -346,6 +376,13 @@ function initReviewDialog() {
               candBox.dataset.candidate = c.id;
             },
           }, [document.createTextNode(c.display)]));
+          if (c.evidence && c.file_id) {
+            candBox.append(el('details', {}, [
+              el('summary', {class: 'muted small'}, [document.createTextNode('查看识别依据')]),
+              el('div', {class: 'muted small', style: 'white-space:pre-wrap;overflow-wrap:anywhere'}, [document.createTextNode(c.evidence)]),
+              el('a', {href: '/files/' + materialId + '/' + c.file_id, target: '_blank'}, [document.createTextNode('查看当前原件')]),
+            ]));
+          }
         }
         candBox.dataset.candidate = "";
       } else {
@@ -656,6 +693,7 @@ function initFeedback() {
 document.addEventListener("DOMContentLoaded", () => {
   for (const form of $all(".upload-form")) initUploadForm(form);
   initReviewDialog();
+  initReextract();
   initOcrDetails();
   initDoctor();
   initFeedback();

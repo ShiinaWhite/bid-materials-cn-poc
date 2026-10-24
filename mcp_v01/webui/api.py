@@ -62,8 +62,6 @@ class Api:
         if mode == "import":
             if subtype not in pages.catalog.UPLOAD_TYPES:
                 return 400, {"error": "请选择有效的材料类别"}
-            if not title:
-                return 400, {"error": "请填写材料标题"}
         else:
             if not re.fullmatch(r"\d+", material_id):
                 return 400, {"error": "材料编号无效"}
@@ -76,6 +74,20 @@ class Api:
         self.c.log("webui.upload_received", job=job.id, mode=mode, filename=filename,
                    size=size, sha256=sha, actor=actor, subtype=subtype or None,
                    material_id=material_id or None)
+        return 202, _job_dict(job)
+
+    def reextract(self, request):
+        data = request.json()
+        if (not isinstance(data, dict) or set(data) != {'material_id', 'actor'}
+                or type(data['material_id']) is not int or data['material_id'] < 1
+                or not isinstance(data['actor'], str) or not data['actor'].strip()):
+            return 400, {'error': '请提供资料编号和经办人'}
+        try:
+            Query(self.c).get_material(data['material_id'])
+        except ValueError:
+            return 404, {'error': '资料不存在'}
+        job = self.uploader.submit('reextract', None, '', 0,
+                                   dict(material_id=data['material_id'], actor=data['actor'].strip()))
         return 202, _job_dict(job)
 
     # GET /api/material/<id>/text

@@ -79,6 +79,10 @@ def route(method, pattern):
 
 # ------------------------------------------------------------ handlers ----
 
+@route('POST', '/api/reextract')
+def api_reextract(req, ctx):
+    return json_response(*ctx.api.reextract(req))
+
 @route('GET', '/projects')
 def page_projects(req, ctx):
     return html_response(projects.list_page(ctx.config, req.query))

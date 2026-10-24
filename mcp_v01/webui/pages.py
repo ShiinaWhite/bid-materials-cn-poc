@@ -422,7 +422,8 @@ def material_page(config, material_id):
                 if shown in seen:
                     continue
                 seen.add(shown)
-                items.append({"id": c["extracted_id"], "display": shown})
+                items.append({"id": c["extracted_id"], "display": shown,
+                              "evidence": c.get('evidence', ''), "file_id": c.get('evidence_file_id')})
             candidates_map[field] = items
     dialog_data = json.dumps({"type": mtype,
                               "fields": [{"field": f, "label": catalog.FIELD_LABELS.get(f, f),
@@ -474,11 +475,17 @@ def material_page(config, material_id):
     actions += f' <a class="btn" href="/upload?material={mid}">{icon("upload")} 更新资料</a>'
     if reviewable:
         actions += f' <button class="btn" data-review>{icon("edit")} 完善资料</button>'
+    if current:
+        actions += ' <button class="btn" data-reextract>重新识别</button><span class="small muted" data-reextract-status role="status"></span>'
+    title_note = ''
+    if display._hints_from_detail(detail).get('license_title_suggestion'):
+        title_note = '<p class="muted small">名称为识别内容生成的显示建议，字段确认状态见下方资料信息。</p>'
     hero = f"""<div class="detail-hero">
   {preview}
   <div class="detail-titlebox"{evidence_attrs}>
     <nav class="crumbs"><a href="/browse">资料分类</a> › <a href="/browse?group={group_key}">{esc(catalog.GROUP_LABEL.get(group_key, ''))}</a> › <span>{esc(type_label)}</span></nav>
     <h1>{esc(name)}</h1>
+    {title_note}
     <div class="detail-meta">{chips}</div>
     {who}
     {validity_html}
@@ -641,15 +648,15 @@ def upload_page(config, params):
         return render.layout("更新资料", content, active="upload", sys_ok=service.system_ok(config))
     content = f"""<div class="page-narrow">
   <h1>上传资料</h1>
-  <p class="muted">选择资料类别、填写名称后上传。系统会自动识别资料内容并保存；识别出的信息为“待完善”状态，请之后在资料页面上核对确认。</p>
+  <p class="muted">选择资料类别后上传。名称可留空，先使用文件名显示；营业执照识别到唯一企业名称后会生成显示名称建议。识别信息为“待完善”状态，请在资料页面核对确认。</p>
   <div class="card"><form class="upload-form" data-mode="import">
     <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
       <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
     {_camera_entry()}
     <label class="field"><span>资料类别（必选）</span>
       <select class="input" name="subtype" required><option value="">请选择类别…</option>{options}</select></label>
-    <label class="field"><span>资料名称（必填，将显示在列表中）</span>
-      <input class="input" name="title" placeholder="例如：2024年度审计报告" required></label>
+    <label class="field"><span>资料名称（可选）</span>
+      <input class="input" name="title" placeholder="留空使用文件名；也可自定义名称"></label>
     <label class="field"><span>经办人（必填）</span>
       <input class="input" name="actor" placeholder="例如：张三" required></label>
     <div class="upload-progress hidden"><div class="bar"><div class="bar-fill"></div></div><div class="progress-text muted small"></div></div>

@@ -209,9 +209,14 @@ class Supervisor:
                 elif action=='phase_enrich':
                     from .enrichment import enrich
                     result=enrich(self.c)
-                elif action in ('reextract','phase_reextract'):
-                    from .reextract import reextract
-                    if action=='reextract':result=reextract(self.c,payload,defer_projection=True)
+                elif action in ('reextract','reextract_current','phase_reextract'):
+                    from .reextract import reextract,current_record,existing_ocr
+                    if action in ('reextract','reextract_current'):
+                        record=current_record(self.c,payload) if action=='reextract_current' else payload
+                        cached=existing_ocr(self.c,record) if action=='reextract_current' else None
+                        options=dict(defer_projection=True)
+                        if cached is not None:options['ocr_factory']=lambda _:cached
+                        result=reextract(self.c,record,**options)
                     else:
                         from .phase_ocr import PhaseOcr
                         if self.phase_ocr is None:self.phase_ocr=PhaseOcr(self.c)
