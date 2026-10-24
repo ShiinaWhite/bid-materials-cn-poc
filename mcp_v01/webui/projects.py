@@ -222,7 +222,7 @@ def upload_page(config, pid):
         <span class="project-drop">点击选择或拖拽项目文件到这里
         <input class="input" type="file" name="file" accept="{','.join(model.EXTENSIONS)}" required></span></label>
         <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。
-        分类由系统按内容自动判断，无需选择；先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>'''
+        系统会根据文件名及可识别内容自动分类，无需选择；先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>'''
     return layout(config, '上传项目文件', f'<p><a href="/project/{pid}">返回 {esc(p["name"])}</a></p><section class="card project-form"><h1>上传项目文件</h1>' + form('project.file.add', pid, label='上传项目文件', body=body) + '</section>')
 
 

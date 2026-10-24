@@ -257,13 +257,15 @@ def render_pages_for_vision(path, max_pages=3, max_side=2200):
     Images are passed through unchanged when small enough (original bytes are
     never modified on disk); PDF pages are rasterized with PyMuPDF at a scale
     that keeps the payload bounded. Nothing is written to disk or the DB.
-    Returns [(mime, bytes), ...]."""
+    Returns [(mime, bytes), ...] where the mime ALWAYS matches the encoded
+    bytes (a resized PNG is re-encoded as JPEG and declared as such; without
+    Pillow the original bytes pass through with their original mime)."""
     from pathlib import Path
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix in ('.png', '.jpg', '.jpeg'):
         mime = 'image/png' if suffix == '.png' else 'image/jpeg'
-        return [(mime, _bounded_image(path.read_bytes(), max_side))]
+        return [_bounded_image(mime, path.read_bytes(), max_side)]
     if suffix == '.pdf':
         import pymupdf
         pages = []
@@ -277,17 +279,22 @@ def render_pages_for_vision(path, max_pages=3, max_side=2200):
     raise ValueError('vision recognition supports PDF/PNG/JPEG originals only')
 
 
-def _bounded_image(data, max_side):
-    """Downscale an in-memory transport copy when the original is oversized."""
-    from PIL import Image, ImageOps
+def _bounded_image(mime, data, max_side):
+    """(mime, bytes) transport copy. Resize requires Pillow; any failure —
+    including Pillow being absent — degrades safely to the original bytes
+    with their original mime, never to a mismatched pair."""
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return mime, data
     try:
         with Image.open(io.BytesIO(data)) as image:
             if max(image.size) <= max_side:
-                return data
+                return mime, data
             image = ImageOps.exif_transpose(image)
             image.thumbnail((max_side, max_side))
             out = io.BytesIO()
             image.convert('RGB').save(out, 'JPEG', quality=88)
-            return out.getvalue()
+            return 'image/jpeg', out.getvalue()
     except Exception:
-        return data
+        return mime, data

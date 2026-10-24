@@ -61,7 +61,12 @@ def ocr_classify(text):
 
 def combine(ocr_signal, vision_signal):
     """ocr_signal: (type|None, basis, confidence) ; vision_signal: same or None.
-    Returns (type_code|None, basis, conflict:bool)."""
+    Returns (type_code|None, basis, conflict:bool).
+
+    A typed material_type is strong structural identity: only a deterministic
+    OCR header signal — alone or confirmed by vision — may bind it. Vision-only
+    classification NEVER binds a type; it becomes an exception whose suggested
+    type stays visible in the basis (review blocker #5)."""
     ocr_type, ocr_basis, ocr_confidence = ocr_signal
     if vision_signal is None:
         return ocr_type, 'ocr_only:' + ocr_basis, False
@@ -70,8 +75,8 @@ def combine(ocr_signal, vision_signal):
         return ocr_type, 'ocr_vision_agree', False
     if ocr_type is not None and vision_type in (None, 'unknown'):
         return ocr_type, 'ocr_only:' + ocr_basis, False
-    if ocr_type is None and vision_type not in (None, 'unknown') and vision_confidence >= 0.8:
-        return vision_type, 'vision_only', False
-    if ocr_type is not None and vision_type not in (None, 'unknown'):
-        return None, f'classification_conflict:{ocr_type}|{vision_type}', True
-    return None, 'unclassified', True
+    if ocr_type is None:
+        suggested = vision_type if vision_type not in (None, 'unknown') else ''
+        basis = ('vision_only_suggested:' + suggested) if suggested else 'unclassified'
+        return None, basis, True
+    return None, f'classification_conflict:{ocr_type}|{vision_type}', True

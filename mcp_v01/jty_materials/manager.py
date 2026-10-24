@@ -64,6 +64,19 @@ def request(config, action, payload=None, *, start=True, timeout=240):
     raise TimeoutError("manager startup timeout")
 
 
+def review_required(dual_receipt, disputes, classification):
+    """True only when something genuinely needs a human: an open field dispute
+    (engine disagreement or human-fact conflict), ambiguous candidates, a
+    single-chain field, a failed validator, or any classification conflict /
+    vision failure. Fields the verification policy deliberately excludes
+    (scope, audit_opinion, titles, quals, long prose) are NOT exceptions."""
+    dual = dual_receipt or {}
+    return bool(disputes) or bool(dual.get('ambiguous')) or bool(dual.get('single_chain')) \
+        or bool(dual.get('validator_failed')) or bool(dual.get('human_conflicts')) \
+        or bool((classification or {}).get('conflict')) \
+        or dual.get('vision_status') != 'succeeded'
+
+
 class Supervisor:
     def __init__(self, config):
         self.c = config
@@ -153,10 +166,14 @@ class Supervisor:
             receipt['dual_engine'] = dict(vision_status=dual.get('vision_status'),
                                           verified=len(dual.get('verified', {})),
                                           disputed=len(disputes),
+                                          ambiguous=len(dual.get('ambiguous', {})),
+                                          single_chain=len(dual.get('single_chain', [])),
+                                          validator_failed=len(dual.get('validator_failed', [])),
+                                          human_conflicts=len(dual.get('human_conflicts', [])),
+                                          policy_skipped=len(dual.get('policy_skipped', [])),
                                           verified_fields=sorted(dual.get('verified', {})))
             classification = receipt.get('classification') or {}
-            receipt['requires_human_review'] = bool(disputes) or bool(classification.get('conflict')) \
-                or dual.get('vision_status') != 'succeeded'
+            receipt['requires_human_review'] = review_required(dual, disputes, classification)
         except Exception as error:
             self.c.log('manager.dual_engine_failed', material_id=receipt.get('material_id'),
                        error=type(error).__name__ + ': ' + str(error)[:300])

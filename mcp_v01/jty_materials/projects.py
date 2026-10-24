@@ -258,14 +258,33 @@ def reconcile_files(config):
             journal.unlink()
 
 
+def _bucket_text(path, ext, budget=4000):
+    """Bounded NATIVE text for bucket classification (no OCR, in memory)."""
+    path = Path(path)
+    try:
+        if ext in ('.txt', '.md'):
+            with path.open(encoding='utf-8-sig', errors='replace') as stream:
+                return stream.read(budget)
+        if ext == '.docx':
+            from .document_extract import docx_units
+            head = []
+            for unit in docx_units(path, lambda *a: None, []):
+                head.append(unit['text_raw'])
+                if sum(len(x) for x in head) > budget:
+                    break
+            return ''.join(head)[:budget]
+        if ext == '.pdf':
+            import pymupdf
+            with pymupdf.open(str(path)) as doc:
+                return ''.join(doc.load_page(i).get_text('text', sort=True)
+                               for i in range(min(3, doc.page_count)))[:budget]
+    except Exception:
+        pass  # classification falls back to the filename, never fails the upload
+    return ''
+
+
 def add_file(config, payload, actor):
     pid = int(payload['project_id'])
-    category = payload.get('category')
-    if category not in CATEGORIES:
-        # Zero-fill: the normal path never asks for a bucket; classify it.
-        category = classify_bucket(payload.get('filename') or '', payload.get('intake_text') or '')
-    if category not in CATEGORIES:
-        raise ValueError('项目文件分类无效')
     filename, ext = validate_filename(payload.get('filename'))
     source = Path(payload['source']).resolve(strict=True)
     if not source.is_file() or source.is_relative_to(config.repository_root) or source.is_relative_to(config.state_dir):
@@ -277,6 +296,17 @@ def add_file(config, payload, actor):
     if sha != payload.get('expected_sha256'):
         raise ValueError('上传文件 SHA256 已变化')
     validate_signature(source, ext)
+    category = payload.get('category')
+    if category not in CATEGORIES:
+        # Zero-fill: the normal path never asks for a bucket. Classify from
+        # the filename plus bounded native text (honest: content is read when
+        # the format allows it cheaply; otherwise the filename decides).
+        bucket_text = payload.get('intake_text')
+        if bucket_text is None:
+            bucket_text = _bucket_text(source, ext)
+        category = classify_bucket(payload.get('filename') or '', bucket_text or '')
+    if category not in CATEGORIES:
+        raise ValueError('项目文件分类无效')
     journal = None
     try:
         with Store(config) as s:
@@ -360,6 +390,14 @@ def auto_intake(config, payload, actor):
     elif len(matches) == 1:
         pid, created = matches[0]['project_id'], False
     else:
+        # Auto-creating a formal project requires a reliable identity from the
+        # document itself: a tender number or an extracted project name. A
+        # bare filename is never enough (review blocker #4) — uncertainty
+        # becomes an exception, never a guessed project.
+        if not fields.get('tender_no') and not fields.get('name'):
+            needs_review.append('insufficient_project_identity')
+            return dict(project_id=None, created_project=False, matched_by=None,
+                        fields=fields, needs_review=needs_review, filename=filename, saved=False)
         pid, created, matched_by = None, True, None
     if created:
         name = fields.get('name') or Path(filename).stem or '未命名项目'

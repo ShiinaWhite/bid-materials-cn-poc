@@ -220,7 +220,7 @@ class Store:
             if version==SCHEMA_VERSION:return {'changed':False,'schema':SCHEMA_VERSION}
             if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0','jty-mcp-0.6.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
             config.backup_dir.mkdir(parents=True,exist_ok=True)
-            backup=config.backup_dir/('schema-before-v06-'+uuid.uuid4().hex[:12]+'.db')
+            backup=config.backup_dir/('schema-before-'+SCHEMA_VERSION+'-'+uuid.uuid4().hex[:12]+'.db')
             with backup.open('xb'):pass
             with closing(sqlite3.connect(backup)) as dest:con.backup(dest)
             with con:

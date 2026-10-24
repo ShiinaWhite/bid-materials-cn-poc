@@ -93,7 +93,8 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
     if vision_receipt['status'] != 'succeeded':
         receipt = dict(material_id=material_id, vision_run_id=vision_receipt['run_id'],
                        vision_status=vision_receipt['status'], vision_error=vision_receipt.get('error'),
-                       verified={}, disputed={}, ambiguous={}, skipped=[],
+                       verified={}, disputed={}, ambiguous={}, single_chain=[], validator_failed=[],
+                       human_conflicts=[], policy_skipped=[],
                        original_file_id=original['file_id'], original_sha256=original['sha256'])
         with Store(config) as s:
             with s.db:
@@ -102,14 +103,20 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
                            note='vision failed; original already ingested, candidates stay pending'))
         return receipt
 
-    verified, disputed, ambiguous, skipped = {}, {}, {}, []
+    verified, disputed, ambiguous = {}, {}, {}
+    single_chain, validator_failed, human_conflicts, policy_skipped = [], [], [], []
     identity = 'machine:' + vision_receipt.get('extractor', 'vision')
     with Store(config) as s:
         with s.db:
             s.db.execute('BEGIN IMMEDIATE')
-            cur = s.db.execute('SELECT is_current,sha256 FROM material_file WHERE file_id=?',
+            cur = s.db.execute('SELECT is_current,sha256,version_id FROM material_file WHERE file_id=?',
                                (original['file_id'],)).fetchone()
-            if cur is None or not cur['is_current'] or cur['sha256'] != original['sha256']:
+            # Final critical-section recheck (spec review blocker #2): the disk
+            # bytes, the registered row and the recognized original must ALL
+            # still be the same evidence before any machine fact is written.
+            if cur is None or not cur['is_current'] or cur['sha256'] != original['sha256'] \
+                    or cur['version_id'] != original['version_id'] \
+                    or digest(safe_path(config.repository_root, original['relative_path'])) != original['sha256']:
                 raise ValueError('current original changed during recognition; no consensus written')
             type_code = s.db.execute("""SELECT t.code FROM material m JOIN material_type t
                 ON t.type_id=m.material_type_id WHERE material_id=?""", (material_id,)).fetchone()[0]
@@ -123,7 +130,7 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
                 ocr_value = next(iter(ocr_values), None)
                 vision_value = next(iter(vision_values), None)
                 if ocr_value is None or vision_value is None:
-                    skipped.append(field)  # single-chain fields are never auto-verified
+                    single_chain.append(field)  # single-chain fields are never auto-verified
                     continue
                 if ocr_value != vision_value:
                     _mark_dispute(s.db, field, ocr_values[ocr_value], vision_values[vision_value],
@@ -136,9 +143,14 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
                 if outcome == 'verified':
                     verified[field] = ocr_value
                 elif outcome == 'conflict':
+                    _mark_dispute(s.db, field, ocr_values[ocr_value], vision_values[vision_value],
+                                  ocr_value, vision_value, original, human_fact=True)
                     disputed[field] = {'ocr': ocr_value, 'vision': vision_value, 'existing_human_fact': True}
+                    human_conflicts.append(field)
+                elif outcome == 'validator_failed':
+                    validator_failed.append(field)
                 else:
-                    skipped.append(field)
+                    policy_skipped.append(field)
             if verified:
                 status = s.db.execute('SELECT verification_status FROM material WHERE material_id=?',
                                       (material_id,)).fetchone()[0]
@@ -146,7 +158,10 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
                     s.db.execute("UPDATE material SET verification_status='ai_extracted' WHERE material_id=?", (material_id,))
     receipt = dict(material_id=material_id, vision_run_id=vision_receipt['run_id'],
                    vision_status=vision_receipt['status'], verified=verified, disputed=disputed,
-                   ambiguous=ambiguous, skipped=sorted(set(skipped)),
+                   ambiguous=ambiguous, single_chain=sorted(single_chain),
+                   validator_failed=sorted(validator_failed),
+                   human_conflicts=sorted(human_conflicts),
+                   policy_skipped=sorted(policy_skipped),
                    original_file_id=original['file_id'], original_sha256=original['sha256'])
     _maybe_auto_title(config, material_id)
     with Store(config) as s:
@@ -164,17 +179,19 @@ def _group(rows):
 
 def _try_machine_verify(s, material_id, type_code, field, value, ocr_rows, vision_rows,
                         original, vision_run_id, identity):
-    """Apply every hard condition (spec #15); returns verified|conflict|skipped."""
+    """Apply every hard condition (spec #15). Outcomes: verified | conflict |
+    validator_failed | policy_skipped (policy exclusions and fields a human
+    already confirmed at exactly this value — neither is an exception)."""
     if not machine_verify_allowed(field) or len(value) > MACHINE_VERIFY_MAX_LEN:
-        return 'skipped'
+        return 'policy_skipped'
     if not machine_validator(field, value):
-        return 'skipped'
+        return 'validator_failed'
     existing = _fact_value(s.db, material_id, type_code, field)
     origin = fact_origin(s.db, material_id, field)
     if origin == 'human':
         if existing is not None and str(existing) != value:
             return 'conflict'  # human fact wins; becomes an exception
-        return 'skipped'  # human already confirmed exactly this value
+        return 'policy_skipped'  # human already confirmed exactly this value
     occurred = now()
     chain = json.dumps({'method': 'dual_engine_consensus', 'ocr_run': ocr_rows[0]['run_id'],
                         'vision_run': vision_run_id, 'original_sha256': original['sha256'],
@@ -214,8 +231,9 @@ def _machine_fact(s, material_id, field, value, type_code):
         s.db.execute(f'UPDATE {table} SET {column}=? WHERE {where}', [stored, *params])
 
 
-def _mark_dispute(db, field, ocr_rows, vision_rows, ocr_value, vision_value, original):
-    detail = json.dumps({'kind': 'field_conflict', 'ocr_value': ocr_value, 'vision_value': vision_value,
+def _mark_dispute(db, field, ocr_rows, vision_rows, ocr_value, vision_value, original, human_fact=False):
+    detail = json.dumps({'kind': 'human_fact_conflict' if human_fact else 'field_conflict',
+                         'ocr_value': ocr_value, 'vision_value': vision_value,
                          'original_sha256': original['sha256']}, ensure_ascii=False)
     for row in list(ocr_rows) + list(vision_rows):
         db.execute("""UPDATE extracted_fact SET verification='disputed',verified_at=?,verification_json=?
