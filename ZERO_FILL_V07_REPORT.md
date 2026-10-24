@@ -4,7 +4,7 @@
 
 ```text
 BASE_HEAD   = c627510a93d829eb32866be11f216d2180b27aa5 (origin/main)
-FINAL_HEAD  = 见 git log（branch zero-fill-product-reset 的最后一次提交）
+FINAL_HEAD  = 2af8274 (e2e929e 主实现 + 2af8274 清理提交)
 BRANCH      = zero-fill-product-reset
 WORKTREE    = D:\workSpace\bmc-zero-fill-v07
 
