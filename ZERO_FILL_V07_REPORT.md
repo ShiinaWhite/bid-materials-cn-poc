@@ -3,8 +3,11 @@
 ## 头部标识
 
 ```text
-BASE_HEAD   = c627510a93d829eb32866be11f216d2180b27aa5 (origin/main)
-FINAL_HEAD  = 2af8274 (e2e929e 主实现 + 2af8274 清理提交)
+REVIEW_BASE_HEAD    = 123be8d3c6f54043bb4fb0a55ecd2d7a2ac875e3 (review 起点)
+FUNCTIONAL_FIX_HEAD = d93cb30 (review 修补轮的功能修复提交)
+REPORT_COMMIT       = self（本报告提交自身；最终 HEAD 以 review 时 branch HEAD 为准）
+
+历史说明：主实现 = e2e929e（+2af8274 清理、+报告 commit），BASE = c627510（origin/main）。
 BRANCH      = zero-fill-product-reset
 WORKTREE    = D:\workSpace\bmc-zero-fill-v07
 
