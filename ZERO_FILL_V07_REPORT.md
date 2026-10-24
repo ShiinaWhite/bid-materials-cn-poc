@@ -77,6 +77,48 @@ MERGED_TO_MAIN     = NO
 DEPLOYED           = NO
 ```
 
+## FINAL_REVIEW_FIXES（review 修补轮，REVIEW_BASE=123be8d… → FUNCTIONAL_FIX=d93cb30）
+
+```text
+REQUIRES_HUMAN_REVIEW_EXCEPTION_ACCOUNTING = PASS  # manager.review_required() 纯函数 + 用例：
+                                                   # policy_skipped-only=False；single_chain/validator_failed/
+                                                   # ambiguous/human_conflicts/dispute/classification/vision失败=True
+POLICY_SKIPPED_DISTINGUISHED = PASS  # scope（iso_cert 合法字段）共识进入 policy_skipped，不强制人工
+FINAL_DISK_SHA_RECHECK = PASS        # BEGIN IMMEDIATE 临界区内：disk SHA == DB SHA == 识别时 SHA == version 绑定
+TOCTOU_MACHINE_VERIFY_GUARD = PASS   # 识别中途篡改原件 bytes → 整次共识拒绝；0 machine_verified 标记、
+                                     # 0 dual_engine_consensus 事件、org 列未写（无部分写入）
+OVERSIZED_IMAGE_MIME = PASS          # 超大 PNG 传输副本重编码 JPEG 且声明 image/jpeg（magic bytes 断言）
+PILLOW_FALLBACK = PASS               # sys.modules 屏蔽 PIL → 原始 bytes 原样透传、mime 与内容一致；
+                                     # 生产部署本就依赖 Pillow（缩略图/OCR 链），本轮仍做了缺依赖退化
+PROJECT_IDENTITY_REQUIRED_FOR_AUTO_CREATE = PASS  # 仅文件名、正文无身份 → insufficient_project_identity，
+                                                  # 不建项目；正文有项目名称 → 正常建档
+VISION_ONLY_TYPED_CLASSIFICATION = BLOCKED   # 已移除 vision_only 强绑定通路
+VISION_ONLY_BECOMES_EXCEPTION = PASS         # OCR 无信号 + Vision 0.99 → other + conflict +
+                                             # suggested type 保留在 classification.vision_signal/basis
+MACHINE_DIRECT_SQL_GUARD = PASS              # 无 machine 上下文的普通 Store 连接 UPDATE org/certificate_detail
+                                             # 受保护事实列 → SQLite 触发器拒绝，数据不变
+
+MIGRATION_BACKUP_NAME = FIXED        # schema-before-jty-mcp-0.7.0-*.db（此前误写 v06）
+PROJECT_BUCKET_CONTENT_CLASSIFY = FIXED  # project.file.add 现以文件名 + 有界原生文本分类（txt/md/docx/pdf
+                                         # native 前页，无 OCR），文案同步改为"根据文件名及可识别内容"
+
+TARGETED_TESTS   = test_zero_fill_review 20/20 PASS + test_zero_fill 回归 42/42 PASS
+                 + 受影响既有套件（project_manager/service/webui、upload_repair、p05 Origin/RealManager）
+                   57 tests：1 个环境性错误（P05_DOWSE_EXE 未导出）补环境后单独复跑 PASS
+PY_COMPILE       = PASS
+GIT_DIFF_CHECK   = PASS
+
+FULL_REGRESSION = NOT_RERUN（沿用 123be8d 前的 251 tests / 0 代码失败结果；本轮仅改
+                  共识分桶/mime/分类/项目 intake，均被上述 targeted tests 覆盖）
+REAL_UMI        = NOT_RERUN（沿用此前 PASS）
+REAL_VISION     = NOT_RERUN（沿用此前 PASS；本轮未触碰 provider 传输语义以外的行为）
+BROWSER_QA      = NOT_RERUN（沿用此前 DOM/溢出 PASS；本轮未改页面结构，仅一句文案）
+
+PRODUCTION_TOUCHED = NO
+MERGED_TO_MAIN     = NO
+DEPLOYED           = NO
+```
+
 ## OpenCode Go 实际接口（实测，非记忆）
 
 ```text
