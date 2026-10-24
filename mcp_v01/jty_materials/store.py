@@ -12,7 +12,7 @@ from contextlib import closing
 
 from .common import digest, now, safe_path
 from .fields import FIELDS, ALLOWED, ORG_FIELDS, GRADE_FIELDS, validate_value, org_norm,field_spec,allowed_field,qualification_name
-from .schema_v06 import upgrade, VERSION
+from .schema_v07 import upgrade, VERSION
 
 
 SCHEMA_VERSION = VERSION
@@ -145,6 +145,7 @@ class Store:
     def __init__(self, config, *, readonly=False):
         self.c = config
         self.review = None
+        self.machine = None
         self.project_write = None
         self.document_write = False
         if readonly:
@@ -168,6 +169,11 @@ class Store:
         for key in ("actor", "field", "evidence", "candidate", "reason", "time", "material", "sha256", "action"):
             self.db.create_function("review_" + key, 0,
                                     lambda k=key: self.review.get(k) if self.review else None)
+        # Machine verification context (dual-engine consensus). Absent by
+        # default, so plain SQL never gains a machine write path.
+        for key in ("write", "identity", "field", "material", "evidence", "sha256", "reason", "time"):
+            self.db.create_function("machine_" + key, 0,
+                                    lambda k=key: self.machine.get(k) if self.machine else None)
         self.db.create_function('org_norm',1,org_norm)
         self.db.create_function('document_writer', 0, lambda: int(self.document_write))
         for key in ('actor', 'action'):
@@ -212,7 +218,7 @@ class Store:
             con.execute('PRAGMA foreign_keys=ON');con.execute('PRAGMA busy_timeout=5000')
             version=con.execute("SELECT meta_value FROM schema_meta WHERE meta_key='schema_version'").fetchone()[0]
             if version==SCHEMA_VERSION:return {'changed':False,'schema':SCHEMA_VERSION}
-            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
+            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0','jty-mcp-0.6.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
             config.backup_dir.mkdir(parents=True,exist_ok=True)
             backup=config.backup_dir/('schema-before-v06-'+uuid.uuid4().hex[:12]+'.db')
             with backup.open('xb'):pass
@@ -290,6 +296,37 @@ class Store:
                                     ("accepted" if str(value) == candidate else "rejected", actor, now(), reason, candidate_id))
         finally:
             self.review = None
+
+    def machine_fact(self, material_id, field, value):
+        """Write one consensus value into the guarded fact column under the
+        machine verification context set by the caller. Caller owns the
+        transaction and the policy; the triggers still bind this write to the
+        current original SHA and append the verification ledger event."""
+        if not self.machine or self.machine.get('write') != 1:
+            raise ValueError('machine verification context required')
+        m = self.db.execute('SELECT m.*,t.code FROM material m JOIN material_type t ON t.type_id=m.material_type_id WHERE material_id=?', (material_id,)).fetchone()
+        if m is None or not allowed_field(m['code'], field):
+            raise ValueError('machine-verified field is not allowed for this material type')
+        value = validate_value(field, value)
+        table, column, kind = field_spec(field, m['code'])
+        if field in ORG_FIELDS:
+            where, params = 'org_id=?', [m['subject_org_id']]
+        else:
+            where, params = 'material_id=?', [material_id]
+        if table == 'audit_report_detail' and field == 'fiscal_year' and not self.db.execute(
+                'SELECT 1 FROM audit_report_detail WHERE material_id=?', (material_id,)).fetchone():
+            self.machine['field'] = field
+            self.db.execute('INSERT INTO audit_report_detail(material_id,fiscal_year) VALUES(?,?)', (material_id, value))
+            return
+        if field in GRADE_FIELDS:
+            where += ' AND activity=?'
+            params.append(GRADE_FIELDS[field])
+        stored = '' if field == 'enterprise_name' and value is None else 0 if field == 'long_term_valid' and value is None else value
+        self.machine['field'] = field
+        if field == 'enterprise_name':
+            self.db.execute(f'UPDATE org SET name=?,name_norm=? WHERE {where}', [stored, org_norm(stored), *params])
+        else:
+            self.db.execute(f'UPDATE {table} SET {column}=? WHERE {where}', [stored, *params])
 
     def __enter__(self):
         return self

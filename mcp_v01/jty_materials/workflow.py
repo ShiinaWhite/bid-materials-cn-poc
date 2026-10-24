@@ -28,7 +28,7 @@ def rebuild_projections(config):
                 atomic_write(target, source.read_bytes())
 
 
-def import_material(config, source, kind=None, title=None, actor=None, material_id=None, subtype=None, ocr_factory=Ocr,batch_context=None,source_metadata=None,defer_projection=False):
+def import_material(config, source, kind=None, title=None, actor=None, material_id=None, subtype=None, ocr_factory=Ocr,batch_context=None,source_metadata=None,defer_projection=False,vision_provider=None):
     source = Path(source).resolve(strict=True)
     if source.suffix.lower() not in ('.pdf','.png','.jpg','.jpeg','.docx','.xlsx','.md','.aip') or not source.is_file():
         raise ValueError("supported originals: PDF/PNG/JPEG/DOCX/XLSX/MD/AIP; preserve source bytes")
@@ -36,9 +36,10 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
         raise ValueError("source must be outside managed repository/staging")
     if not actor or not actor.strip():
         raise ValueError("actor is required")
-    if material_id is None and (kind not in ("certificate", "contract",'material') or not title or not title.strip()):
+    zero_fill = material_id is None and (kind is None or (kind == 'material' and subtype is None))
+    if material_id is None and not zero_fill and (kind not in ("certificate", "contract",'material') or not title or not title.strip()):
         raise ValueError("new import requires certificate/contract kind and title")
-    if material_id is None:kind,type_code,certificate_kind=resolve_type(kind,subtype)
+    if material_id is None and not zero_fill:kind,type_code,certificate_kind=resolve_type(kind,subtype)
     source_hash = digest(source)
     if batch_context is not None:
         if set(batch_context)!={'batch_id','item_id','plan_sha256','source_sha256','expected_current_sha256'} or batch_context['source_sha256']!=source_hash:
@@ -77,6 +78,32 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
     finally:
         ocr.stop()
     text = Path(result["raw"]).read_text(encoding="utf-8")
+    classification = None
+    if zero_fill:
+        from .classify import ocr_classify, combine
+        from . import providers as _providers, vision as _vision
+        ocr_type, ocr_basis = ocr_classify(text)
+        vision_signal = None
+        if vision_provider is not None and not isinstance(vision_provider, _providers.NullProvider) \
+                and source.suffix.lower() in ('.pdf', '.png', '.jpg', '.jpeg'):
+            try:
+                code, confidence, basis = _vision.classify_original(config, vision_provider, original)
+                vision_signal = (code, basis, confidence)
+            except Exception as error:  # vision failure must not block ingestion
+                config.log('vision.classify_failed', error=type(error).__name__ + ': ' + str(error)[:200])
+                vision_signal = None
+        final_type, basis, conflict = combine(
+            (ocr_type, ocr_basis, 1.0) if ocr_type else (None, ocr_basis, 0.0), vision_signal)
+        subtype = final_type or 'other'
+        kind = 'material'
+        classification = dict(final=subtype, basis=basis, conflict=bool(conflict),
+                              ocr_signal=ocr_type, vision_signal=(vision_signal or (None,))[0])
+        if not title or not title.strip():
+            title = (source_metadata or {}).get('source_title') or source.stem or '上传资料'
+            # the title is a filename fallback now; the deterministic builder
+            # may renew it after recognition (titling.maybe_auto_title)
+            source_metadata = dict(source_metadata or {}, title_origin='filename_fallback')
+        kind, type_code, certificate_kind = resolve_type(kind, subtype)
     if material_id is None and type_code=='other' and source_metadata and source_metadata.get('auto_type_from_explicit_title'):
         header=normalize(text[:500])
         detected='software_copyright' if '计算机软件著作权登记证书' in header else 'patent' if '实用新型专利证书' in header or '发明专利证书' in header else None
@@ -116,6 +143,9 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
             old_people=[dict(r) for r in store.db.execute('SELECT * FROM material_person WHERE material_id=?',(material_id,))]
             store.db.execute("UPDATE material_file SET is_current=0 WHERE material_id=? AND is_current=1", (material_id,))
             store.db.execute("UPDATE extracted_fact SET review_status='superseded' WHERE material_id=?", (material_id,))
+            # A replaced original invalidates every machine verification mark
+            # of this material: consensus is re-derived for the new original.
+            store.db.execute("UPDATE extracted_fact SET verification=NULL,verified_at=NULL,verification_json=NULL WHERE material_id=?", (material_id,))
             files = {}
             for role, key in (("original", "original"), ("ocr_raw_text", "raw"), ("ocr_raw_jsonl", "jsonl"), ("search_text", "search")):
                 relative_stage = Path(result[key]).relative_to(stage)
@@ -136,10 +166,16 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
             audit(store.db, actor, "material.version" if old_files else "material.import", "material", material_id,
                   {"version_id": version, "source_sha256": source_hash, "source_name": source.name,
                    "files": files, "previous_files": old_files, "previous_person_relations":old_people,"requires_human_review": True})
-            receipt={"material_id":material_id,"material_code":code,"version_id":version,"files":files,"original_sha256":source_hash,"requires_human_review":True}
+            receipt={"material_id":material_id,"material_code":code,"version_id":version,"files":files,"original_sha256":source_hash,"requires_human_review":True,"classification":classification}
             if batch_context is not None:audit(store.db,actor,'batch.item.commit','material',material_id,dict(**batch_context,receipt=receipt))
+            if classification is not None:
+                audit(store.db,actor,'material.auto_classified','material',material_id,dict(classification,original_file_id=files['original'],original_sha256=source_hash))
+                if classification.get('conflict'):
+                    audit(store.db,actor,'material.classification_conflict','material',material_id,
+                          dict(classification,original_file_id=files['original'],
+                               note='engines disagree or no confident signal; imported as other until resolved'))
             if source_metadata is not None:
-                audit(store.db,actor,'material.source_context','material',material_id,dict(source_metadata,original_file_id=files['original'],original_sha256=source_hash,candidate_only=True))
+                audit(store.db,actor,'material.source_context','material',material_id,dict(source_metadata,classification=classification,original_file_id=files['original'],original_sha256=source_hash,candidate_only=True))
                 person_label=source_metadata.get('person_label')
                 if person_label and source_metadata.get('person_relation_status')=='candidate':
                     person_key='SRC-'+__import__('hashlib').sha256(source_metadata['person_source_key'].encode()).hexdigest()[:20]
@@ -152,9 +188,13 @@ def import_material(config, source, kind=None, title=None, actor=None, material_
                 store.db.execute("UPDATE material_person SET evidence_file_id=?,relation_status='relation_pending' WHERE material_id=?",(files['original'],material_id))
                 audit(store.db,actor,'person.relation_version_pending','material',material_id,dict(previous=old_people,new_original_file_id=files['original'],reason='original replaced; prior identity relation retained only as pending, not reverified'))
     if not defer_projection:rebuild_projections(config)
+    from .titling import maybe_auto_title
+    try:
+        maybe_auto_title(config, material_id)
+    except Exception as error:  # a title suggestion must never fail an import
+        config.log('material.auto_title_failed', material_id=material_id, error=str(error)[:200])
     config.log("material.imported", material_id=material_id, version_id=version, original_sha256=source_hash, files=files)
-    return {"material_id": material_id, "material_code": code, "version_id": version,
-            "files": files, "original_sha256": source_hash, "requires_human_review": True}
+    return receipt
 
 
 def batch_receipt(db,context):

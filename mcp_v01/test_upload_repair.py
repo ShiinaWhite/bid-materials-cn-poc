@@ -106,7 +106,7 @@ class UploadRepairTests(unittest.TestCase):
 
     def test_empty_whitespace_title_fallback_and_suggestion(self):
         for title in ['', '  \t ']:
-            m=self.add(title);self.assertEqual(m['title'],'营业执照-新')
+            m=self.add(title);self.assertEqual(m['title'],NAME+' 营业执照')  # v0.7 auto title
             self.assertEqual(display.display_from_detail(m),NAME+' 营业执照')
             self.assertEqual(service.summarize(self.c,[m['material_id']])[0]['display'],NAME+' 营业执照')
 
@@ -247,7 +247,9 @@ class UploadRepairTests(unittest.TestCase):
         m=Query(self.c).get_material(m['material_id'])
         self.assertEqual({f:v[0]['value'] for f,v in m['candidate_fields'].items()},EXPECTED)
         self.assertEqual(m['verified_facts'],{})
-        self.assertEqual(display.display_from_detail(m),'营业执照-新') # stale source hints never applied
+        # v0.7: the deterministic title built at first import persists; stale
+        # candidate hints are never re-applied after a replace
+        self.assertEqual(display.display_from_detail(m),NAME+' 营业执照')
 
     def test_detail_pending_title_note_no_expiry_warning_and_optional_form(self):
         m=self.add()
@@ -255,7 +257,8 @@ class UploadRepairTests(unittest.TestCase):
             html=pages.material_page(self.c,m['material_id'])
             form=pages.upload_page(self.c,{})
         for value in EXPECTED.values():self.assertIn(value,html)
-        self.assertIn('待完善',html);self.assertIn('显示建议',html);self.assertIn('重新识别',html)
+        self.assertIn('待完善',html);self.assertIn('名称由识别内容自动生成',html);self.assertIn('重新识别',html)
         self.assertNotIn('有效期未记录',html);self.assertNotIn('暂未录入企业名称',html)
-        self.assertIn('资料名称（可选）',form);self.assertNotIn('name="title" placeholder="例如',form)
+        # v0.7 zero-fill: name/category are default-hidden advanced overrides
+        self.assertIn('自定义显示名称',form);self.assertNotIn('name="actor"',form)
         self.assertEqual(catalog.UPLOAD_EXTS,('.pdf','.png','.jpg','.jpeg'))

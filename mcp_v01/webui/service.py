@@ -306,6 +306,16 @@ def annotate_detail(config, detail):
     detail["relations_view"] = relations
     detail["recent_audit"] = audit
     detail["extraction"] = extraction
+    # Zero-fill exceptions: open field conflicts + unresolved classification.
+    from jty_materials.consensus import disputes_for
+    detail["exceptions"] = disputes_for(config, mid)
+    detail["classification_exception"] = False
+    if current_original and detail.get("material_type") == "other":
+        with Store(config, readonly=True) as s:
+            hit = s.db.execute("""SELECT 1 FROM audit_log a WHERE a.action='material.classification_conflict'
+                AND a.entity_id=? AND json_extract(a.detail_json,'$.original_file_id')=? LIMIT 1""",
+                (mid, current_original["file_id"])).fetchone()
+        detail["classification_exception"] = hit is not None
     return detail
 
 

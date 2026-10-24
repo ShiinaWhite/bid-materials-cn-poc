@@ -13,7 +13,7 @@ import shutil
 import sqlite3
 import uuid
 
-from .common import atomic_write, consistent_read, digest, now, safe_path
+from .common import atomic_write, consistent_read, digest, normalize, now, safe_path
 from .schema_v05 import CATEGORIES
 from .store import Store
 from .workflow import audit
@@ -22,7 +22,94 @@ MAX_BYTES = 200 * 1024 * 1024
 EXTENSIONS = ('.pdf', '.png', '.jpg', '.jpeg', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.zip')
 INLINE = {'.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}
 ACTIONS = ('project.create', 'project.update', 'project.archive', 'project.restore',
-           'project.file.add', 'project.material.link', 'project.material.unlink')
+           'project.file.add', 'project.material.link', 'project.material.unlink',
+           'project.auto_intake')
+
+# Deterministic first-match bucket classification (spec #32). The normal
+# upload path never asks the user to pick a bucket; conflicts land in 'other'.
+_BUCKET_RULES = (
+    ('tender_docs', ('招标文件', '招标公告', '招标邀请', '投标邀请', '招标答疑', '澄清文件', '工程量清单', '招标控制价', '标段')),
+    ('bid_outputs', ('投标文件', '投标函', '中标通知书', '中标结果', '施工合同', '合同协议', '承包合同')),
+    ('result', ('验收报告', '验收单', '结算书', '竣工验收', '履约评价', '业主评价')),
+    ('project_evidence', ('营业执照', '资质证书', '许可证', '安全生产许可', '业绩证明', '证明材料', '审计报告', '社保证明')),
+    ('process', ('检测报告', '试验报告', '进度报告', '会议纪要', '施工日志', '签证单', '变更单', '联系单')),
+)
+
+
+def classify_bucket(filename, text_head=''):
+    """First-match keyword classification over filename (then a bounded text
+    head). No match → 'other'. Deliberately conservative and testable."""
+    haystack = filename + '\n' + (text_head or '')[:2000]
+    for bucket, keywords in _BUCKET_RULES:
+        if any(keyword in haystack for keyword in keywords):
+            return bucket
+    return 'other'
+
+
+_USCC_CHARS = set('0123456789ABCDEFGHJKLMNPQRTUWXY')
+
+
+def _intake_tender_fields(text):
+    """Deterministic tender-field extraction for zero-fill project intake."""
+    import re
+    fields = {}
+    patterns = {
+        'name': r'(?:项目名称|工程名称|招标项目)\s*[:：]\s*([^\n：:]{4,120})',
+        'tender_no': r'(?:招标编号|项目编号|标段编号|招标编号:)\s*[:：]?\s*([0-9A-Za-z\-＿()（）./]{4,60})',
+        'tenderer': r'(?:招标人|招标单位|采购人)\s*[:：]\s*([^\n：:，,。;；]{4,80})',
+        'lot_name': r'(?:标段名称|标段)\s*[:：]\s*([^\n：:，,。;；]{2,80})',
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text or '')
+        if match:
+            value = re.sub(r'\s+', ' ', match.group(1)).strip('　 ;；,，。.')
+            if value:
+                fields[key] = value[:120]
+    return fields
+
+
+def _intake_text(config, path, ext, budget=30000):
+    """Bounded native-first text for field detection (in memory only)."""
+    path = Path(path)
+    head = []
+    try:
+        if ext in ('.txt', '.md'):
+            with path.open(encoding='utf-8-sig', errors='replace') as stream:
+                head = [stream.read(budget)]
+        elif ext == '.docx':
+            from .document_extract import docx_units
+            for unit in docx_units(path, lambda *a: None, []):
+                head.append(unit['text_raw'])
+                if sum(len(x) for x in head) > budget:
+                    break
+        elif ext == '.xlsx':
+            from .document_extract import xlsx_units
+            for unit in xlsx_units(path, lambda *a: None):
+                head.append(unit['text_raw'])
+                break
+        elif ext == '.pdf':
+            import pymupdf
+            with pymupdf.open(str(path)) as document:
+                for i, page in enumerate(document):
+                    if i >= 8:
+                        break
+                    head.append(page.get_text('text', sort=True))
+                from .document_extract import native_sufficient, PageOcr
+                if not native_sufficient(''.join(head)):
+                    ocr = PageOcr(config)
+                    try:
+                        with pymupdf.open(str(path)) as document:
+                            for i, page in enumerate(document):
+                                if i >= 3:
+                                    break
+                                zoom = min(2.0, 2000 / max(page.rect.width, page.rect.height))
+                                head.append(ocr.recognize(page.get_pixmap(
+                                    matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes('png')))
+                    finally:
+                        ocr.close()
+    except Exception as error:
+        config.log('project.intake_text_failed', error=str(error)[:200])
+    return normalize(''.join(head))[:budget]
 
 
 def text(value, label, required=False, limit=500):
@@ -57,6 +144,8 @@ def execute(config, action, payload):
     actor = text(payload.get('actor'), '经办人', True, 100)
     if action == 'project.file.add':
         return add_file(config, payload, actor)
+    if action == 'project.auto_intake':
+        return auto_intake(config, payload, actor)
     with Store(config) as s:
         s.project_write = dict(actor=actor, action=action)
         with s.db:
@@ -173,6 +262,9 @@ def add_file(config, payload, actor):
     pid = int(payload['project_id'])
     category = payload.get('category')
     if category not in CATEGORIES:
+        # Zero-fill: the normal path never asks for a bucket; classify it.
+        category = classify_bucket(payload.get('filename') or '', payload.get('intake_text') or '')
+    if category not in CATEGORIES:
         raise ValueError('项目文件分类无效')
     filename, ext = validate_filename(payload.get('filename'))
     source = Path(payload['source']).resolve(strict=True)
@@ -225,6 +317,115 @@ def add_file(config, payload, actor):
     finally:
         if journal is not None:
             reconcile_files(config)
+
+
+def auto_intake(config, payload, actor):
+    """Zero-fill project intake (spec #31): drop a tender document, get a
+    project. Deterministic field extraction and matching; the document itself
+    is saved into the matched/new project's tender bucket. Ambiguity is
+    reported, never guessed."""
+    import re
+    filename, ext = validate_filename(payload.get('filename'))
+    source = Path(payload['source']).resolve(strict=True)
+    if not source.is_file() or source.is_relative_to(config.repository_root) or source.is_relative_to(config.state_dir):
+        raise ValueError('source must be outside managed repository/state')
+    size = source.stat().st_size
+    if not 0 < size <= MAX_BYTES:
+        raise ValueError('文件为空或超过 200MB 上限')
+    sha = digest(source)
+    if sha != payload.get('expected_sha256'):
+        raise ValueError('上传文件 SHA256 已变化')
+    validate_signature(source, ext)
+    text_head = _intake_text(config, source, ext)
+    fields = _intake_tender_fields(text_head)
+    with Store(config, readonly=True) as s:
+        matches = []
+        matched_by = None
+        if fields.get('tender_no'):
+            matches = [dict(r) for r in s.db.execute(
+                "SELECT project_id,name FROM project WHERE status='active' AND tender_no=?",
+                (fields['tender_no'],))]
+            if matches:
+                matched_by = 'tender_no'
+        if not matches and fields.get('name'):
+            matches = [dict(r) for r in s.db.execute(
+                "SELECT project_id,name FROM project WHERE status='active' AND replace(name,' ','')=?",
+                (re.sub(r'\s+', '', fields['name']),))]
+            if matches:
+                matched_by = 'name'
+    needs_review = []
+    if len(matches) > 1:
+        needs_review.append('ambiguous_project_match:' + str(len(matches)))
+        pid, created, matched_by = None, False, None
+    elif len(matches) == 1:
+        pid, created = matches[0]['project_id'], False
+    else:
+        pid, created, matched_by = None, True, None
+    if created:
+        name = fields.get('name') or Path(filename).stem or '未命名项目'
+        if len(name) > 500:
+            name = name[:500]
+        with Store(config) as s:
+            s.project_write = dict(actor=actor, action='project.create')
+            with s.db:
+                s.db.execute('BEGIN IMMEDIATE')
+                new_pid = s.db.execute('SELECT coalesce(max(project_id),0)+1 FROM project').fetchone()[0]
+                code = f'PRJ-{new_pid:06d}'
+                s.db.execute('''INSERT INTO project(project_id,project_code,name,tender_no,tenderer,lot_name,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?)''',
+                    (new_pid, code, name, fields.get('tender_no'), fields.get('tenderer'),
+                     fields.get('lot_name'), now(), now()))
+                audit(s.db, actor, 'project.create', 'project', new_pid,
+                      dict(**fields, project_code=code, origin='auto_intake', source_filename=filename))
+        pid = new_pid
+    receipt = dict(project_id=pid, created_project=created, matched_by=matched_by,
+                   fields=fields, needs_review=needs_review, filename=filename)
+    if pid is None:
+        # Ambiguous match: do not attach the document to a guessed project.
+        receipt['saved'] = False
+        return receipt
+    file_receipt = add_file(config, dict(payload, project_id=pid, category='tender_docs',
+                                         intake_text=text_head, filename=filename), actor)
+    receipt.update(saved=True, project_file_id=file_receipt.get('project_file_id'),
+                   duplicate=bool(file_receipt.get('duplicate')))
+    if not file_receipt.get('duplicate'):
+        _auto_link_materials(config, pid, actor, text_head, receipt)
+    with Store(config) as s:
+        with s.db:
+            audit(s.db, actor, 'project.auto_intake', 'project', pid,
+                  {k: v for k, v in receipt.items() if k != 'project_file_id'})
+    return receipt
+
+
+def _auto_link_materials(config, pid, actor, text_head, receipt):
+    """Spec #33: link an existing material when the document text contains a
+    统一社会信用代码 that matches exactly one material's org code."""
+    import re as _re
+    codes = {_re.sub(r'\s+', '', c) for c in _re.findall(r'[0-9A-Z][0-9A-Z\s]{16}[0-9A-Z]', text_head or '')}
+    codes = {c for c in codes if len(c) == 18 and set(c) <= _USCC_CHARS}
+    if not codes:
+        return
+    with Store(config, readonly=True) as s:
+        marks = ','.join('?' for _ in codes)
+        rows = [dict(r) for r in s.db.execute(f"""SELECT DISTINCT m.material_id FROM material m
+            JOIN org o ON o.org_id=m.subject_org_id
+            WHERE o.unified_social_credit_code IN ({marks})
+              AND m.business_status<>'archived'""", sorted(codes))]
+        already = {r['material_id'] for r in s.db.execute(
+            "SELECT material_id FROM project_material WHERE project_id=? AND status='active'", (pid,))}
+    targets = [r['material_id'] for r in rows if r['material_id'] not in already]
+    if len(targets) != 1:
+        if len(targets) > 1:
+            receipt.setdefault('needs_review', []).append('ambiguous_material_match')
+        return
+    result = execute(config, 'project.material.link',
+                     dict(project_id=pid, material_id=targets[0], actor=actor, note=None))
+    receipt['auto_linked_material'] = targets[0]
+    with Store(config) as s:
+        with s.db:
+            audit(s.db, actor, 'project.material.autolink', 'project_material',
+                  result.get('reference_id'),
+                  dict(project_id=pid, material_id=targets[0], basis='unified_social_credit_code_match'))
 
 
 class Projects:

@@ -49,7 +49,9 @@ class Api:
         filename = re.split(r"[\\/]", q.get("filename", ""))[-1].strip() or "upload"
         if Path(filename).suffix.lower() not in pages.catalog.UPLOAD_EXTS:
             return 400, {"error": pages.catalog.UPLOAD_FORMAT_ERROR}
-        actor = (q.get("actor") or "").strip()
+        # Zero-fill: no actor/subtype/title inputs. The workstation identity is
+        # honest system identity; type/title are derived from the document.
+        actor = (q.get("actor") or "").strip() or "local_webui"
         subtype = (q.get("subtype") or "").strip()
         title = (q.get("title") or "").strip()
         material_id = (q.get("material") or "").strip()
@@ -57,10 +59,8 @@ class Api:
             expected = int(request.headers.get("Content-Length", ""))
         except ValueError:
             return 411, {"error": "缺少 Content-Length"}
-        if not actor:
-            return 400, {"error": "缺少操作人（将写入审计记录）"}
         if mode == "import":
-            if subtype not in pages.catalog.UPLOAD_TYPES:
+            if subtype and subtype not in pages.catalog.UPLOAD_TYPES:
                 return 400, {"error": "请选择有效的材料类别"}
         else:
             if not re.fullmatch(r"\d+", material_id):
@@ -72,23 +72,60 @@ class Api:
         params = {"actor": actor, "subtype": subtype, "title": title, "material_id": material_id}
         job = self.uploader.submit(mode, staged, filename, size, params)
         self.c.log("webui.upload_received", job=job.id, mode=mode, filename=filename,
-                   size=size, sha256=sha, actor=actor, subtype=subtype or None,
+                   size=size, sha256=sha, subtype=subtype or None,
                    material_id=material_id or None)
         return 202, _job_dict(job)
 
     def reextract(self, request):
         data = request.json()
-        if (not isinstance(data, dict) or set(data) != {'material_id', 'actor'}
-                or type(data['material_id']) is not int or data['material_id'] < 1
-                or not isinstance(data['actor'], str) or not data['actor'].strip()):
-            return 400, {'error': '请提供资料编号和经办人'}
+        if (not isinstance(data, dict) or set(data) != {'material_id'}
+                or type(data['material_id']) is not int or data['material_id'] < 1):
+            return 400, {'error': '请提供资料编号'}
         try:
             Query(self.c).get_material(data['material_id'])
         except ValueError:
             return 404, {'error': '资料不存在'}
         job = self.uploader.submit('reextract', None, '', 0,
-                                   dict(material_id=data['material_id'], actor=data['actor'].strip()))
+                                   dict(material_id=data['material_id'], actor='local_webui'))
         return 202, _job_dict(job)
+
+    # POST /api/exception/resolve  (body: material_id, field, choice, value?)
+    def resolve_exception(self, request):
+        data = request.json()
+        if not isinstance(data, dict) or not all((data.get('material_id'), data.get('field'), data.get('choice'))):
+            return 400, {"error": "请提供资料、字段与处理方式"}
+        if data['choice'] not in ('ocr', 'vision', 'manual'):
+            return 400, {"error": "处理方式无效"}
+        try:
+            payload = {'material_id': int(data['material_id']), 'field': data['field'], 'choice': data['choice']}
+            if data['choice'] == 'manual':
+                payload['value'] = review.convert_value(data['field'], data.get('value'))
+        except (ValueError, TypeError) as e:
+            return 400, {"error": str(e)}
+        from jty_materials.manager import request as manager_request
+        try:
+            result = manager_request(self.c, 'exception.resolve', payload, timeout=300)
+            return 200, {"ok": True, "result": result}
+        except (ValueError, KeyError, TypeError) as e:
+            return 400, {"error": str(e)}
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return 503, {"error": str(e), "retry": True}
+
+    # POST /api/material/reclassify  (body: material_id, subtype)
+    def reclassify(self, request):
+        data = request.json()
+        if not isinstance(data, dict) or not data.get('material_id') or not data.get('subtype'):
+            return 400, {"error": "请提供资料编号与目标类别"}
+        from jty_materials.manager import request as manager_request
+        try:
+            result = manager_request(self.c, 'material.reclassify',
+                                     {'material_id': int(data['material_id']), 'subtype': data['subtype']},
+                                     timeout=300)
+            return 200, {"ok": True, "result": result}
+        except (ValueError, KeyError, TypeError) as e:
+            return 400, {"error": str(e)}
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return 503, {"error": str(e), "retry": True}
 
     # GET /api/material/<id>/text
     def material_text(self, material_id):

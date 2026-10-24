@@ -51,13 +51,14 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         const fields = Object.fromEntries(new FormData(form));
         let response;
-        if (form.dataset.action === "project.file.add") {
+        if (form.dataset.action === "project.file.add" || form.dataset.action === "project.auto_intake") {
           const file = fileInput.files[0];
           if (!file || file.size === 0 || file.size > 200 * 1024 * 1024) throw new Error("请选择非空文件，单文件最大 200MB");
           delete fields.file;
           fields.filename = file.name;
           button.textContent = "正在上传…";
-          response = await fetch("/api/project/file?" + new URLSearchParams(fields), {method: "POST", body: file});
+          const intake = form.dataset.action === "project.auto_intake" ? "&intake=1" : "";
+          response = await fetch("/api/project/file?" + new URLSearchParams(fields) + intake, {method: "POST", body: file});
           const received = await response.json();
           if (!response.ok) throw new Error(received.error || "上传失败");
           button.textContent = "正在保存…";
@@ -67,8 +68,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const job = await poll.json();
             if (!poll.ok || job.state === "error") throw new Error(job.error || "上传任务读取失败");
             if (job.state === "done") {
-              window.location.assign("/project/" + job.result.project_id);
-              return;
+              const pid = job.result && job.result.project_id;
+              if (pid) { window.location.assign("/project/" + pid); return; }
+              const review = (job.result && job.result.needs_review) || [];
+              throw new Error(review.length ? "找到多个可能的项目（" + review.join("；") + "），请手动创建或进入项目后再上传。" : "未能确定所属项目，请手动创建后再上传。");
             }
           }
         } else {
@@ -124,10 +127,6 @@ function initUploadForm(form) {
     if (f) {
       drop.querySelector("strong").textContent = f.name;
       drop.querySelector(".muted.small").textContent = fmtBytes(f.size) + " · 点击可重新选择";
-      if (!$("input[name=title]", form)) {
-        const title = document.querySelector('input[name="title"]');
-        if (title && !title.value) title.value = f.name.replace(/\.[^.]+$/, "");
-      }
     }
     submit.disabled = !f;
   };
@@ -142,12 +141,6 @@ function initUploadForm(form) {
   if (cameraBtn && cameraInput) {
     cameraBtn.addEventListener("click", () => cameraInput.click());
     cameraInput.addEventListener("change", () => setFile(cameraInput.files[0]));
-  }
-
-  const actorInput = form.querySelector('input[name="actor"]');
-  if (actorInput) {
-    actorInput.value = localStorage.getItem("jty-actor") || "";
-    actorInput.addEventListener("change", () => localStorage.setItem("jty-actor", actorInput.value.trim()));
   }
 
   const showResult = (kind, nodes) => {
@@ -191,12 +184,13 @@ function initUploadForm(form) {
         document.createTextNode("新文件与当前使用的文件相同，未做更改。"),
       ]);
     } else if (data.state === "done" && r.material_id) {
-      const nodes = [
-        el("strong", {}, [document.createTextNode("上传完成。")]),
-      ];
-      if (mode === "import") {
+      const nodes = [el("strong", {}, [document.createTextNode("上传完成。")])];
+      if (mode === "import" && r.requires_human_review) {
         nodes.push(el("br"));
-        nodes.push(document.createTextNode("资料里的关键信息目前是“待确认”状态，请打开核对确认后使用。"));
+        nodes.push(document.createTextNode("系统已自动识别；有需要处理的内容，请在资料页面查看提示。"));
+      } else if (mode === "import") {
+        nodes.push(el("br"));
+        nodes.push(document.createTextNode("系统已完成自动分类、识别与核验，无需再填写。"));
       }
       nodes.push(el("br"));
       nodes.push(el("a", { href: "/material/" + r.material_id }, [document.createTextNode("查看资料 →")]));
@@ -209,11 +203,10 @@ function initUploadForm(form) {
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     if (!file) return;
-    const actor = (actorInput && actorInput.value.trim()) || "";
-    if (!actor) { alert("请填写操作人（将写入审计记录）"); return; }
+    // Zero-fill: no actor, no required category. Advanced overrides are sent
+    // only when the user explicitly filled them in.
     const subtypeEl = form.querySelector('select[name="subtype"]');
     const titleEl = form.querySelector('input[name="title"]');
-    if (mode === "import" && subtypeEl && !subtypeEl.value) { alert("请选择材料类别"); return; }
 
     submit.disabled = true;
     progress.classList.remove("hidden");
@@ -224,9 +217,9 @@ function initUploadForm(form) {
     const xhr = new XMLHttpRequest();
     // Metadata goes in the query string: XHR headers must be ByteString and
     // silently throw on Chinese values; URLSearchParams percent-encodes UTF-8.
-    const meta = new URLSearchParams({ mode: mode, actor: actor });
-    if (subtypeEl) meta.set("subtype", subtypeEl.value);
-    if (titleEl) meta.set("title", titleEl.value.trim());
+    const meta = new URLSearchParams({ mode: mode });
+    if (subtypeEl && subtypeEl.value) meta.set("subtype", subtypeEl.value);
+    if (titleEl && titleEl.value.trim()) meta.set("title", titleEl.value.trim());
     meta.set("filename", file.name);
     if (form.dataset.material) meta.set("material", form.dataset.material);
     xhr.open("POST", "/api/upload?" + meta.toString());
@@ -281,13 +274,12 @@ function initReextract() {
   const box = $('.detail-titlebox');
   const status = $('[data-reextract-status]');
   button.addEventListener('click', async () => {
-    const actor = prompt('不重新上传文件，只重新整理当前文件中的可识别信息。\n请填写经办人（将写入审计记录）：');
-    if (!actor || !actor.trim()) return;
+    // Zero-fill: no actor prompt. The click itself is the audit event.
     button.disabled = true;
     status.textContent = '正在重新识别…';
     try {
       const response = await fetch('/api/reextract', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({material_id: Number(box.dataset.mid), actor: actor.trim()})});
+        body: JSON.stringify({material_id: Number(box.dataset.mid)})});
       let job = await response.json();
       if (!response.ok) throw new Error(job.error || '无法开始重新识别');
       while (job.state !== 'done' && job.state !== 'error') {
@@ -302,6 +294,62 @@ function initReextract() {
     } catch (error) {
       status.textContent = '重新识别失败：' + error.message;
       button.disabled = false;
+    }
+  });
+}
+
+/* ---------------- 异常消歧（选择即审计，无经办人/说明） ---------------- */
+function initExceptions() {
+  const box = $('.detail-titlebox');
+  const materialId = box && box.dataset.mid;
+  if (!materialId) return;
+  const post = async (payload) => {
+    const response = await fetch('/api/exception/resolve', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '处理失败');
+    location.reload();
+  };
+  document.addEventListener('click', async (e) => {
+    const choice = e.target.closest('[data-resolve-choice]');
+    if (choice) {
+      choice.disabled = true;
+      try {
+        await post({material_id: Number(materialId), field: choice.dataset.field, choice: choice.dataset.resolveChoice});
+      } catch (error) { alert(error.message); choice.disabled = false; }
+      return;
+    }
+    const manual = e.target.closest('[data-resolve-manual]');
+    if (manual) {
+      const item = manual.closest('.exception-item');
+      item.querySelector('.exception-manual').classList.toggle('hidden');
+      return;
+    }
+    const save = e.target.closest('[data-resolve-manual-save]');
+    if (save) {
+      const item = save.closest('.exception-item');
+      const input = item.querySelector('.exception-manual input');
+      if (!input.value.trim()) { alert('请输入核对后的正确值'); return; }
+      save.disabled = true;
+      try {
+        await post({material_id: Number(materialId), field: save.dataset.resolveManualSave,
+                    choice: 'manual', value: input.value.trim()});
+      } catch (error) { alert(error.message); save.disabled = false; }
+      return;
+    }
+    const reclassify = e.target.closest('[data-reclassify]');
+    if (reclassify) {
+      const select = document.querySelector('[data-reclassify-type]');
+      if (!select || !select.value) { alert('请选择正确的类别'); return; }
+      reclassify.disabled = true;
+      try {
+        const response = await fetch('/api/material/reclassify', {method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({material_id: Number(materialId), subtype: select.value})});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '分类确认失败');
+        location.reload();
+      } catch (error) { alert(error.message); reclassify.disabled = false; }
     }
   });
 }
@@ -344,8 +392,6 @@ function initReviewDialog() {
     const candBox = el("div", { class: "cand-pick hidden" });
     const valueWrap = el("div", { class: "field" });
     const hint = el("div", { class: "muted small", style: "margin:-8px 0 10px" });
-    const actor = el("input", { class: "input", value: localStorage.getItem("jty-actor") || "", placeholder: "例如：张三" });
-    const reason = el("input", { class: "input", placeholder: "例如：与资料内容一致" });
     const errorLine = el("div", { class: "error-text hidden" });
     const ok = el("button", { class: "btn btn-primary", type: "submit" }, [document.createTextNode("确认")]);
     const cancel = el("button", { class: "btn", type: "button" }, [document.createTextNode("取消")]);
@@ -412,8 +458,7 @@ function initReviewDialog() {
       el("label", { class: "field" }, [el("span", {}, [document.createTextNode("信息项")]), fieldSelect, customName]),
       candBox,
       valueWrap, hint,
-      el("label", { class: "field" }, [el("span", {}, [document.createTextNode("经办人")]), actor]),
-      el("label", { class: "field" }, [el("span", {}, [document.createTextNode("确认说明（必填）")]), reason]),
+      el("p", { class: "muted small" }, [document.createTextNode("保存后系统会如实记录这次人工修正；无需填写经办人或说明。")]),
       errorLine,
       el("div", { class: "form-actions" }, [cancel, ok]),
     ]);
@@ -431,18 +476,15 @@ function initReviewDialog() {
         material_id: Number(materialId),
         field: field,
         value: input ? input.value.trim() : "",
-        actor: actor.value.trim(),
-        reason: reason.value.trim(),
+        actor: "local_webui",
+        reason: "manual_correction_from_advanced_menu",
         evidence_file_id: Number(evidenceFile),
         evidence_sha256: evidenceSha,
       };
       if (candBox.dataset.candidate) payload.candidate_id = Number(candBox.dataset.candidate);
-      if (!payload.actor) { errorLine.textContent = "请填写经办人"; errorLine.classList.remove("hidden"); return; }
-      if (!payload.reason) { errorLine.textContent = "请填写确认说明"; errorLine.classList.remove("hidden"); return; }
       ok.disabled = true;
       errorLine.classList.add("hidden");
       try {
-        localStorage.setItem("jty-actor", payload.actor);
         const res = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         const data = await res.json();
         if (res.ok) { location.reload(); return; }
@@ -564,11 +606,8 @@ function initFeedback() {
   const resultBox = $(".fb-result", dlg);
   const errLine = $(".error-text", dlg);
   const contentInput = form.querySelector('textarea[name="content"]');
-  const actorInput = form.querySelector('input[name="actor"]');
   const submitBtn = form.querySelector('button[type="submit"]');
   let files = [];
-
-  actorInput.value = localStorage.getItem("jty-actor") || "";
 
   const showErr = (msg) => {
     errLine.textContent = msg || "";
@@ -648,14 +687,12 @@ function initFeedback() {
     e.preventDefault();
     const content = contentInput.value.trim();
     if (!content) { showErr("请填写反馈内容"); contentInput.focus(); return; }
-    const actor = actorInput.value.trim();
     submitBtn.disabled = true;
     showErr("");
     resultBox.innerHTML = "";
 
     const data = new FormData();
     data.append("content", content);
-    data.append("actor", actor);
     data.append("page_path", location.pathname + location.search);
     data.append("page_title", document.title);
     data.append("page_url", location.href);
@@ -668,7 +705,6 @@ function initFeedback() {
       let resp = {};
       try { resp = JSON.parse(xhr.responseText); } catch (err) {}
       if (xhr.status === 200 && resp.ok) {
-        if (actor) localStorage.setItem("jty-actor", actor);
         contentInput.value = "";
         files = [];
         renderFiles();
@@ -694,6 +730,7 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const form of $all(".upload-form")) initUploadForm(form);
   initReviewDialog();
   initReextract();
+  initExceptions();
   initOcrDetails();
   initDoctor();
   initFeedback();

@@ -91,7 +91,9 @@ def status_chips(item):
     if item.get("valid_state") == "expired":
         chips.append(chip("已过期", "chip-red"))
     if item["verification_status"] == "human_verified":
-        chips.append(chip("信息完整", "chip-green-soft"))
+        chips.append(chip("✓ 已人工确认", "chip-green-soft"))
+    elif item["verification_status"] == "ai_extracted":
+        chips.append(chip("✓ 已自动核验", "chip-green-soft", "OCR 与 AI 双链一致并经确定性校验"))
     elif item.get("candidate_count"):
         chips.append('<span class="todo-hint">信息待完善</span>')
     return "".join(chips)
@@ -179,8 +181,6 @@ def feedback_widget():
         <input type="file" class="file-input fb-camera-input" accept="image/jpeg,image/png,image/webp" capture="environment"></div>
       <div class="fb-files"></div>
     </div>
-    <label class="field"><span>经办人（可选）</span>
-      <input class="input" name="actor" maxlength="100" placeholder="例如：张三"></label>
     <div class="error-text hidden"></div>
     <div class="fb-result"></div>
     <div class="form-actions">

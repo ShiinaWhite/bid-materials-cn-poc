@@ -6,4 +6,4 @@ write semantics of its own.
 """
 
 # WebUI release version (independent from the jty-mcp storage schema).
-WEBUI_VERSION = "0.6.1"
+WEBUI_VERSION = "0.7.0"

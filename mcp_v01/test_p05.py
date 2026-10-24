@@ -82,7 +82,7 @@ class OriginTests(unittest.TestCase):
 
     def test_all_post_routes_guarded_before_dispatch_and_body_read(self):
         routes = [p.pattern for method, p, _ in app.ROUTES if method == 'POST']
-        self.assertEqual(set(routes), {'^/api/reextract$', '^/api/upload$', '^/api/review$', '^/api/feedback$', '^/api/doctor$', '^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$', '^/api/project/file$', '^/api/project/document/(?P<action>extract|retry|rebuild)$'})
+        self.assertEqual(set(routes), {'^/api/reextract$', '^/api/upload$', '^/api/review$', '^/api/exception/resolve$', '^/api/material/reclassify$', '^/api/feedback$', '^/api/doctor$', '^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$', '^/api/project/file$', '^/api/project/document/(?P<action>extract|retry|rebuild)$'})
         context = SimpleNamespace(config=SimpleNamespace(log=lambda *a, **k: None), api=mock.Mock())
         handler = type('IsolatedHandler', (app.Handler,), {'app': context})
         server = app.ThreadingHTTPServer(('127.0.0.1', 0), handler)

@@ -162,9 +162,13 @@ class MobileUiTests(unittest.TestCase):
         self.assertIn("DOCX / XLSX 暂不支持，.doc 不支持", html)
         for bad in ('accept=".docx', 'accept=".xlsx', 'accept=".doc"', 'accept="image/*"'):
             self.assertNotIn(bad, html)
+        # v0.7 zero-fill: no actor input; category/name survive only as
+        # default-hidden advanced overrides.
+        self.assertNotIn('name="actor"', html)
+        form_body = html.split('<form', 2)[2].split('</form>')[0]
+        self.assertNotIn('required', form_body.split('upload-advanced')[0])
         self.assertIn('name="subtype"', html)
         self.assertIn('name="title"', html)
-        self.assertIn('name="actor"', html)
         self.assertIn('camera-input', html)
         self.assertIn('accept="image/jpeg,image/png"', html)
         self.assertIn('capture="environment"', html)
@@ -210,7 +214,7 @@ class MobileUiTests(unittest.TestCase):
 
     def test_p05_post_routing_and_same_origin_guard_unchanged(self):
         routes = {p.pattern for method, p, _ in app.ROUTES if method == "POST"}
-        self.assertEqual(routes, {"^/api/reextract$", "^/api/upload$", "^/api/review$", "^/api/feedback$", "^/api/doctor$", "^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$", "^/api/project/file$", "^/api/project/document/(?P<action>extract|retry|rebuild)$"})
+        self.assertEqual(routes, {"^/api/reextract$", "^/api/upload$", "^/api/review$", "^/api/exception/resolve$", "^/api/material/reclassify$", "^/api/feedback$", "^/api/doctor$", "^/api/project/(?P<action>create|update|archive|restore|material/link|material/unlink)$", "^/api/project/file$", "^/api/project/document/(?P<action>extract|retry|rebuild)$"})
         self.assertIn("post_allowed", inspect.getsource(app.Handler.do_POST))
         self.assertEqual(catalog.UPLOAD_EXTS, (".pdf", ".png", ".jpg", ".jpeg"))
 

@@ -162,7 +162,8 @@ class UploadManager:
                 context = source_context(job.filename, job.params.get('title'))
                 payload['source_metadata'] = context
                 if job.mode == "import":
-                    payload.update(kind="material", subtype=job.params["subtype"], title=context['source_title'])
+                    payload.update(kind="material", subtype=job.params["subtype"] or None,
+                                   title=(str(job.params.get("title") or "").strip() or context['source_title']))
                 else:
                     payload["material_id"] = int(job.params["material_id"])
                     context['title_origin'] = 'preserved'

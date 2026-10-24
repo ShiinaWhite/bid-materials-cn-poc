@@ -90,7 +90,7 @@ def page_projects(req, ctx):
 
 @route('GET', '/projects/new')
 def page_project_new(req, ctx):
-    return html_response(projects.edit_page(ctx.config))
+    return html_response(projects.new_page(ctx.config))
 
 
 @route('GET', r'/project/(?P<pid>\d+)')
@@ -217,6 +217,16 @@ def api_text(req, ctx):
 @route("POST", "/api/review")
 def api_review(req, ctx):
     return json_response(*ctx.api.submit_review(req))
+
+
+@route("POST", "/api/exception/resolve")
+def api_exception_resolve(req, ctx):
+    return json_response(*ctx.api.resolve_exception(req))
+
+
+@route("POST", "/api/material/reclassify")
+def api_material_reclassify(req, ctx):
+    return json_response(*ctx.api.reclassify(req))
 
 
 @route("POST", "/api/feedback")

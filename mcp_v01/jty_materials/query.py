@@ -37,7 +37,7 @@ class Query:
                 v.evidence_file_id,v.last_action
                 FROM v_current_facts cf JOIN v_field_verification v
                 ON v.material_id=cf.material_id AND v.field_name=cf.field_name
-                WHERE cf.material_id=? AND v.verification_method='manual_original'
+                WHERE cf.material_id=? AND v.verification_method IN ('manual_original','dual_engine_consensus')
                   AND v.last_action IN ('set','verify','correct')"""
             for f in s.db.execute(sql, (material_id,)):
                 if not allowed_field(m['material_type'],f['field_name']):continue
@@ -46,6 +46,7 @@ class Query:
                     evidence=next(x for x in files if x['file_id']==f['evidence_file_id'])
                     facts[f["field_name"]] = {"value": bool(value) if f['value_type']=='bool' else value, "value_type": f["value_type"],
                         "verified_by": f["verified_by"], "verified_at": f["last_verified_at"],
+                        "verification_method": f["verification_method"],
                         "evidence_file_id": f["evidence_file_id"], 'evidence_sha256':evidence['sha256'],
                         'evidence_relative_path':evidence['relative_path']}
             from .provenance import inherited_facts

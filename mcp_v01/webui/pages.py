@@ -34,11 +34,12 @@ def _fmt_field(field, value):
 
 
 def _field_status(field, verified, inherited, candidates):
-    """Merge to three user states: ok / pending / unset."""
+    """Merge to three user states: ok / pending / unset, plus who verified."""
     if field in verified:
-        return "ok", verified[field]["value"], ""
+        fact = verified[field]
+        return "ok", fact["value"], fact.get("verification_method") or ""
     if field in inherited:
-        return "ok", inherited[field]["value"], ""
+        return "ok", inherited[field]["value"], "inherited"
     cands = candidates.get(field)
     if cands:
         return "pending", cands[0]["value"], ""
@@ -55,8 +56,8 @@ def merge_fields(detail):
                    if f not in display_fields and not f.startswith("qualification:"))
     rows = {}
     for field in display_fields + extra:
-        status, value, _ = _field_status(field, verified, inherited, candidates)
-        rows[field] = {"status": status, "display": _fmt_field(field, value),
+        status, value, method = _field_status(field, verified, inherited, candidates)
+        rows[field] = {"status": status, "display": _fmt_field(field, value), "method": method,
                        "candidates": [{"extracted_id": c["extracted_id"],
                                        "display": _fmt_field(field, c["value"])}
                                       for c in candidates.get(field, [])]}
@@ -399,6 +400,94 @@ def browse(config, params):
     return render.layout("资料分类", content, active="browse", q=q, sys_ok=service.system_ok(config))
 
 
+def _exception_banner(detail):
+    """Exception-first: the only loud element on a normal page is real work."""
+    count = len(detail.get("exceptions") or [])
+    if detail.get("classification_exception"):
+        count += 1
+    if not count:
+        return ""
+    return (f'<div class="exception-banner" role="alert">{icon("warn")} '
+            f'有 {count} 项需要处理</div>')
+
+
+def _exception_card(config, detail):
+    """Conflict resolution: the click IS the audit event — no actor, no note."""
+    exceptions = detail.get("exceptions") or []
+    if not exceptions:
+        return ""
+    mid = detail["material_id"]
+    original = _current_original(detail)
+    base = f"/files/{mid}/{original['file_id']}" if original else ""
+    cards = []
+    for item in exceptions:
+        field_label = catalog.FIELD_LABELS.get(item["field"], item["field"])
+        sides_html = ""
+        for side in item["sides"]:
+            who = "AI 识别" if side["side"] == "vision" else "OCR 识别"
+            choice = "vision" if side["side"] == "vision" else "ocr"
+            sides_html += f"""<div class="exception-side">
+              <span class="chip chip-gray">{esc(who)}</span>
+              <code class="exception-value">{esc(side["value"])}</code>
+              <button class="btn btn-sm" data-resolve-choice="{choice}"
+                data-field="{esc(item["field"])}">使用此值</button>
+            </div>"""
+        cards.append(f"""<div class="exception-item" data-exception="{esc(item["field"])}">
+          <h3>{esc(field_label)}存在识别差异</h3>
+          {sides_html}
+          <div class="exception-actions">
+            {'<a class="btn btn-sm" href="' + base + '" target="_blank">查看原件</a>' if base else ''}
+            <button class="btn btn-sm" data-resolve-manual="{esc(item["field"])}">手动修改</button>
+          </div>
+          <div class="exception-manual hidden">
+            <input class="input" placeholder="输入核对后的正确值">
+            <button class="btn btn-primary btn-sm" data-resolve-manual-save="{esc(item["field"])}">保存</button>
+          </div>
+        </div>""")
+    return f'<section class="card exception-card"><div class="card-head"><h2>{icon("warn")} 需要处理</h2></div>{"".join(cards)}</section>'
+
+
+def _classification_card(detail):
+    """'other' with a classification exception: offer the controlled reclassify."""
+    if not detail.get("classification_exception"):
+        return ""
+    options = "".join(f'<option value="{t}">{esc(catalog.TYPE_LABELS[t])}</option>'
+                      for t in catalog.UPLOAD_TYPES if t != "other")
+    return f"""<section class="card exception-card"><div class="card-head"><h2>{icon("warn")} 分类待确认</h2></div>
+      <p class="muted">系统没能确定这份资料的类别（已按“其他”保存，原件不受影响）。请选择正确类别：</p>
+      <div class="exception-side"><select class="input" data-reclassify-type>{options}</select>
+        <button class="btn btn-primary btn-sm" data-reclassify>确认类别</button></div>
+      <p class="muted small">如果列表中没有合适类别，可下载原件后从上传页的“高级选项”重新指定类别上传。</p>
+    </section>"""
+
+
+def _verification_chip(method):
+    if method == "dual_engine_consensus":
+        return render.chip("✓ 已自动核验", "chip-green", "两条独立识别链一致，且通过确定性校验")
+    if method == "inherited":
+        return render.chip("沿用已确认", "chip-green-soft", "沿用此前人工确认的记录")
+    if method:
+        return render.chip("✓ 已人工确认", "chip-green", "由人工核对原件确认")
+    return ""
+
+
+def _original_preview(detail, current):
+    """Original-first: the original IS the page body for image/PDF materials."""
+    if current is None:
+        return '<div class="preview-hero no-img"><div class="file-glyph big">无文件</div></div>'
+    mid, fid = detail["material_id"], current["file_id"]
+    ext = "." + current["relative_path"].rsplit(".", 1)[-1].lower()
+    base = f"/files/{mid}/{fid}"
+    if ext == ".pdf":
+        return (f'<div class="preview-hero pdf"><iframe class="pdf-frame" src="{base}" '
+                f'title="原件预览"></iframe>'
+                f'<a class="btn preview-open" href="{base}" target="_blank">{icon("open")} 新窗口打开</a></div>')
+    if ext in (".png", ".jpg", ".jpeg"):
+        return (f'<a class="preview-hero image" href="{base}" target="_blank" title="点击查看原图">'
+                f'<img class="original-img" src="{base}" alt="原件图片"></a>')
+    return f'<div class="preview-hero no-img"><a class="btn btn-primary" href="{base}?download=1">下载文件</a></div>'
+
+
 def material_page(config, material_id):
     from . import projects as project_pages
     try:
@@ -430,10 +519,8 @@ def material_page(config, material_id):
                                           "kind": review.field_kind(f),
                                           "hint": catalog.FIELD_HINT.get(f, "")} for f in reviewable],
                               "quals": quals, "candidates": candidates_map}, ensure_ascii=False).replace("</", "<\\/")
-    # ---- hero: preview + friendly name + key facts + actions ----
+    # ---- hero: big original preview + name + honest verification state ----
     rows = merge_fields(detail)
-    pending_count = sum(1 for r in rows.values() if r["status"] == "pending")
-    pending_count += sum(1 for q in _qual_rows(detail) if q["status"] == "pending")
     has_validity = mtype in catalog.HAS_VALIDITY
     if has_validity:
         valid_label, valid_kind, valid_note = _validity_line(detail)
@@ -443,7 +530,9 @@ def material_page(config, material_id):
     if mid in service.TEST_MATERIAL_IDS:
         chips += '<span class="chip chip-gray" title="v0.1 端到端测试产物，已从普通浏览中隐藏">测试资料</span>'
     if detail["verification_status"] == "human_verified":
-        chips += render.chip("信息完整", "chip-green-soft")
+        chips += render.chip("✓ 已人工确认", "chip-green")
+    elif detail["verification_status"] == "ai_extracted":
+        chips += render.chip("✓ 已自动核验", "chip-green", "OCR 与 AI 双链一致并经确定性校验")
     else:
         chips += '<span class="chip chip-gray">信息待完善</span>'
     who = ""
@@ -453,17 +542,6 @@ def material_page(config, material_id):
     if detail.get("persons"):
         names = "、".join(esc(p["name"]) for p in detail["persons"][:6])
         who += f'<div class="who-line"><span class="who-label">人员</span><span class="chip chip-amber" title="人员信息待确认">{names}</span></div>'
-    preview = ""
-    if current is not None:
-        ext = "." + current["relative_path"].rsplit(".", 1)[-1].lower()
-        base = f"/files/{mid}/{current['file_id']}"
-        glyph = f'<div class="file-glyph big">{esc(ext[1:].upper())}</div>'
-        if ext in OPENABLE:
-            preview = (f'<a class="preview-box" href="{base}" target="_blank" title="查看文件">{glyph}'
-                       f'<img src="/thumb/{mid}/{current["file_id"]}.png" alt="" '
-                       f'onerror="this.remove()"></a>')
-        else:
-            preview = f'<a class="preview-box no-img" href="{base}?download=1" title="下载文件">{glyph}</a>'
     evidence_attrs = ""
     if current is not None:
         evidence_attrs = f' data-mid="{mid}" data-evidence-file="{current["file_id"]}" data-evidence-sha="{current["sha256"]}"'
@@ -471,17 +549,27 @@ def material_page(config, material_id):
     if has_validity:
         validity_html = (f'<div class="validity-line"><span class="chip {valid_kind}">{esc(valid_label)}</span>'
                          f'<span class="muted small">{esc(valid_note)}</span></div>')
-    actions = _file_actions(detail, current, primary_class="btn btn-primary") if current else ""
-    actions += f' <a class="btn" href="/upload?material={mid}">{icon("upload")} 更新资料</a>'
+    verified_count = sum(1 for r in rows.values() if r["status"] == "ok")
+    exception_count = len(detail.get("exceptions") or []) + (1 if detail.get("classification_exception") else 0)
+    # Normal path keeps three controls only; everything else lives in ⋯ (spec #29).
+    if current is not None:
+        base = f"/files/{mid}/{current['file_id']}"
+        actions = (f'<a class="btn btn-primary" href="{base}?download=1">{icon("download")} 下载</a>'
+                   f' <a class="btn" href="/upload?material={mid}">{icon("upload")} 更新原件</a>')
+    else:
+        actions = f'<a class="btn" href="/upload?material={mid}">{icon("upload")} 更新原件</a>'
+    advanced = ['<details class="more-menu"><summary class="btn">⋯ 更多</summary><div class="more-menu-body">']
+    advanced.append('<button class="btn btn-sm" data-reextract>重新识别</button>'
+                    '<span class="small muted" data-reextract-status role="status"></span>')
     if reviewable:
-        actions += f' <button class="btn" data-review>{icon("edit")} 完善资料</button>'
-    if current:
-        actions += ' <button class="btn" data-reextract>重新识别</button><span class="small muted" data-reextract-status role="status"></span>'
+        advanced.append(f'<button class="btn btn-sm" data-review>{icon("edit")} 修正信息</button>')
+    advanced.append('<a class="btn btn-sm" href="#history">查看历史</a>')
+    advanced.append('</div></details>')
+    actions += " " + " ".join(advanced)
     title_note = ''
     if display._hints_from_detail(detail).get('license_title_suggestion'):
-        title_note = '<p class="muted small">名称为识别内容生成的显示建议，字段确认状态见下方资料信息。</p>'
-    hero = f"""<div class="detail-hero">
-  {preview}
+        title_note = '<p class="muted small">名称由识别内容自动生成，可在“⋯ 更多 → 修正信息”中调整。</p>'
+    hero = f"""<div class="detail-hero original-first">
   <div class="detail-titlebox"{evidence_attrs}>
     <nav class="crumbs"><a href="/browse">资料分类</a> › <a href="/browse?group={group_key}">{esc(catalog.GROUP_LABEL.get(group_key, ''))}</a> › <span>{esc(type_label)}</span></nav>
     <h1>{esc(name)}</h1>
@@ -490,9 +578,13 @@ def material_page(config, material_id):
     {who}
     {validity_html}
     <div class="detail-actions">{actions}</div>
+    <p class="muted small">识别信息 {verified_count} 项已核验 · 原件下方可展开查看</p>
   </div>
+  {_original_preview(detail, current)}
 </div>"""
-    # ---- reading blocks ----
+    content = _exception_banner(detail) + hero
+    # ---- exceptions first, normal info collapsed ----
+    content += _exception_card(config, detail) + _classification_card(detail)
     blocks_html = []
     for block_title, fields in catalog.TYPE_BLOCKS.get(mtype, [("基本信息", ["title"])]):
         info_rows = []
@@ -500,9 +592,10 @@ def material_page(config, material_id):
             state = rows.get(field, {"status": "unset"})
             if state["status"] == "unset":
                 continue  # reading view only shows what is actually known
-            tag = _pending_tag() if state["status"] == "pending" else ""
+            chip = _verification_chip(state.get("method")) if state["status"] == "ok" else \
+                '<span class="pending-tag" title="系统识别到信息，建议使用前核对">待完善</span>'
             info_rows.append(f'<div class="info-row"><span class="info-label">{esc(catalog.FIELD_LABELS.get(field, field))}</span>'
-                             f'<span class="info-value">{esc(state["display"])}{tag}</span></div>')
+                             f'<span class="info-value">{esc(state["display"])}{chip}</span></div>')
         if not info_rows:
             continue
         blocks_html.append(f"""<div class="info-block">
@@ -512,25 +605,22 @@ def material_page(config, material_id):
     qual_rows = _qual_rows(detail)
     if mtype == "construction_qual" or qual_rows:
         qrows = "".join(f"""<div class="info-row"><span class="info-label">{esc(q['name'])}</span>
-            <span class="info-value">{esc(q['display'])}{_pending_tag() if q['status'] == 'pending' else ''}</span></div>"""
+            <span class="info-value">{esc(q['display'])}{_verification_chip('') if q['status'] == 'ok' else '<span class="pending-tag">待完善</span>'}</span></div>"""
             for q in qual_rows if q["status"] != "unset")
         if qrows:
             blocks_html.append(f'<div class="info-block"><h3>资质范围</h3>{qrows}</div>')
     if blocks_html:
-        pending_note = ('<p class="muted small info-note">标“待完善”的信息来自系统识别，建议使用前核对；'
-                        '点击上方“完善资料”可逐项确认。</p>') if pending_count else ""
-        blocks_card = f"""<section class="card">
-      <div class="card-head"><h2>{icon('check')} 资料信息</h2></div>
+        blocks_card = f"""<details class="card info-collapse" open>
+      <summary class="card-head"><h2>{icon('check')} 识别信息 · {verified_count} 项已核验</h2></summary>
       <div class="info-blocks">{''.join(blocks_html)}</div>
-      {pending_note or ''}
       {render.fact_legend_compact()}
-    </section>"""
+    </details>"""
     else:
-        empty_hint = catalog.EMPTY_INFO_HINTS.get(mtype, "暂未录入这项资料的详细信息。")
-        blocks_card = ('<section class="card"><div class="card-head"><h2>'
-                       + icon('check') + ' 资料信息</h2></div>'
+        empty_hint = catalog.EMPTY_INFO_HINTS.get(mtype, "暂未识别到这项资料的详细信息。")
+        blocks_card = ('<details class="card info-collapse"><summary class="card-head"><h2>'
+                       + icon('check') + ' 识别信息</h2></summary>'
                        f'<p class="muted">{esc(empty_hint)}</p>'
-                       + render.fact_legend_compact() + '</section>')
+                       + render.fact_legend_compact() + '</details>')
     # ---- persons ----
     person_section = ""
     known_persons = [p for p in detail.get("persons", []) if display.valid_person_name(p.get("name"))]
@@ -541,7 +631,6 @@ def material_page(config, material_id):
         person_section = f"""<section class="card"><div class="card-head"><h2>{icon('person')} 相关人员</h2></div>
           <div class="chip-flow">{pchips}</div>
           <p class="muted small">以上人员由资料命名自动识别，尚未人工确认，请以实际为准。</p></section>"""
-    # ---- relations ----
     # ---- relations: group same-named materials into one readable row ----
     relation_section = ""
     if detail.get("relations_view"):
@@ -585,21 +674,16 @@ def material_page(config, material_id):
           <td>{render.fmt_dt(v['imported_at'])}</td>
           <td>{cur}</td>
           <td class="nowrap">{action}</td></tr>""")
-    history_card = f"""<section class="card"><div class="card-head"><h2>{icon('history')} 历史文件</h2></div>
+    history_card = f"""<details class="card info-collapse" id="history"><summary class="card-head"><h2>{icon('history')} 历史文件 · {len(detail['versions'])}</h2></summary>
       <table class="table"><thead><tr><th>保存时间</th><th>状态</th><th>操作</th></tr></thead>
       <tbody>{''.join(vrows) or '<tr><td colspan="3" class="muted">暂无</td></tr>'}</tbody></table>
-      <p class="muted small">更新资料后，旧文件会保留在这里，随时可以查看；当前使用的始终是最上面一份。</p>
-    </section>"""
-    content = f"""{hero}
-<div class="detail-grid">
-  <div class="detail-main">
-    {blocks_card}
-    {person_section}
-    {relation_section}
-    {project_pages.reverse_section(config, mid)}
-    {history_card}
-  </div>
-</div>
+      <p class="muted small">更新原件后，旧文件会保留在这里，随时可以查看；当前使用的始终是最上面一份。</p>
+    </details>"""
+    content += f"""{blocks_card}
+{person_section}
+{relation_section}
+{project_pages.reverse_section(config, mid)}
+{history_card}
 <dialog id="review-dialog" class="dialog" data-config="{esc(dialog_data)}"></dialog>"""
     return render.layout(name[:40], content, active="browse", sys_ok=service.system_ok(config))
 
@@ -611,6 +695,18 @@ def _camera_entry():
     return (f'<div class="camera-entry"><button type="button" class="btn camera-btn">'
             f'{icon("upload", 18)} 拍照上传</button>'
             f'<input type="file" class="file-input camera-input" accept="image/jpeg,image/png" capture="environment"></div>')
+
+
+def _advanced_options(options):
+    """Default-hidden advanced overrides (spec #17): an explicit category or
+    name is a deliberate user intent, never a required step."""
+    return f"""<details class="upload-advanced"><summary class="muted small">高级选项（通常不需要）</summary>
+    <label class="field"><span>指定类别（默认自动识别）</span>
+      <select class="input" name="subtype"><option value="">自动识别</option>{options}</select></label>
+    <label class="field"><span>自定义显示名称（默认自动命名）</span>
+      <input class="input" name="title" placeholder="留空由系统命名"></label>
+    <p class="muted small">自动识别会把这份资料归入系统已知的类别；如果识别不了，会进入“其他”并提示处理。</p>
+  </details>"""
 
 
 def upload_page(config, params):
@@ -629,36 +725,29 @@ def upload_page(config, params):
             return render.error_page("没有找到要更新的资料。", sys_ok=service.system_ok(config))
         name = display.display_from_detail(detail)
         content = f"""<div class="page-narrow">
-  <h1>更新资料</h1>
+  <h1>更新原件</h1>
   <p class="muted">为 <a href="/material/{detail['material_id']}">{esc(name)}</a> 上传新的文件。
-  旧文件会自动保留为历史文件，随时可以查看；之后请在新文件页面上核对其中的信息。</p>
+  旧文件会自动保留为历史文件，随时可以查看；保存后系统会自动重新识别与核验。</p>
   <div class="card"><form class="upload-form" data-mode="replace" data-material="{detail['material_id']}">
     <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
       <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
     {_camera_entry()}
-    <label class="field"><span>经办人（必填）</span>
-      <input class="input" name="actor" placeholder="例如：张三" required></label>
     <div class="upload-progress hidden"><div class="bar"><div class="bar-fill"></div></div><div class="progress-text muted small"></div></div>
     <div class="upload-result"></div>
     <div class="form-actions"><button class="btn btn-primary" type="submit" disabled>开始上传</button>
       <a class="btn" href="/material/{detail['material_id']}">返回</a></div>
   </form></div>
-  <div class="card muted small">提交后系统会自动识别并保存。如果新文件与当前文件完全相同，会提示未做更改。</div>
+  <div class="card muted small">提交后系统会自动识别并保存；如果新文件与当前文件完全相同，会提示未做更改。</div>
 </div>"""
-        return render.layout("更新资料", content, active="upload", sys_ok=service.system_ok(config))
+        return render.layout("更新原件", content, active="upload", sys_ok=service.system_ok(config))
     content = f"""<div class="page-narrow">
   <h1>上传资料</h1>
-  <p class="muted">选择资料类别后上传。名称可留空，先使用文件名显示；营业执照识别到唯一企业名称后会生成显示名称建议。识别信息为“待完善”状态，请在资料页面核对确认。</p>
+  <p class="muted">把资料放到这里即可：类别、名称、识别与核验全部由系统自动完成；只有识别不一致时才会请你处理。</p>
   <div class="card"><form class="upload-form" data-mode="import">
-    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>点击或拖入文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
+    <div class="dropzone" tabindex="0">{icon('upload', 26)}<div><strong>把资料放到这里，或点击选择文件</strong><div class="muted small">支持 PDF / PNG / JPG / JPEG，单个文件不超过 200MB；DOCX / XLSX 暂不支持，.doc 不支持。</div></div>
       <input type="file" class="file-input" accept="{','.join(catalog.UPLOAD_EXTS)}"></div>
     {_camera_entry()}
-    <label class="field"><span>资料类别（必选）</span>
-      <select class="input" name="subtype" required><option value="">请选择类别…</option>{options}</select></label>
-    <label class="field"><span>资料名称（可选）</span>
-      <input class="input" name="title" placeholder="留空使用文件名；也可自定义名称"></label>
-    <label class="field"><span>经办人（必填）</span>
-      <input class="input" name="actor" placeholder="例如：张三" required></label>
+    {_advanced_options(options)}
     <div class="upload-progress hidden"><div class="bar"><div class="bar-fill"></div></div><div class="progress-text muted small"></div></div>
     <div class="upload-result"></div>
     <div class="form-actions"><button class="btn btn-primary" type="submit" disabled>开始上传</button></div>

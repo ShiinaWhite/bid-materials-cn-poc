@@ -133,6 +133,35 @@ class Supervisor:
         self.c.log('manager.operation_recovered', action=action)
         return True
 
+    def _post_import_dual_engine(self, receipt):
+        """Zero-fill: a freshly imported/replaced original immediately goes
+        through the independent vision chain + consensus (spec #22). Without a
+        configured provider the deployment keeps the pure-OCR v0.6.1 behavior;
+        any failure leaves the original ingested and candidates pending (#40)."""
+        if not isinstance(receipt, dict) or not receipt.get('material_id'):
+            return
+        if receipt.get('duplicate') or receipt.get('unchanged'):
+            return
+        from . import providers
+        if providers.provider_config(self.c) is None:
+            receipt['dual_engine'] = dict(vision_status='not_configured')
+            return
+        try:
+            from .consensus import dual_engine_process, disputes_for
+            dual = dual_engine_process(self.c, receipt['material_id'])
+            disputes = disputes_for(self.c, receipt['material_id'])
+            receipt['dual_engine'] = dict(vision_status=dual.get('vision_status'),
+                                          verified=len(dual.get('verified', {})),
+                                          disputed=len(disputes),
+                                          verified_fields=sorted(dual.get('verified', {})))
+            classification = receipt.get('classification') or {}
+            receipt['requires_human_review'] = bool(disputes) or bool(classification.get('conflict')) \
+                or dual.get('vision_status') != 'succeeded'
+        except Exception as error:
+            self.c.log('manager.dual_engine_failed', material_id=receipt.get('material_id'),
+                       error=type(error).__name__ + ': ' + str(error)[:300])
+            receipt['dual_engine'] = dict(vision_status='failed', error=str(error)[:200])
+
     def job(self, action, payload):
         if action.startswith('project.document.'):
             try:
@@ -148,7 +177,7 @@ class Supervisor:
             resuming_migration = False
             # A previous failed recovery must be reconciled before any new write.
             if self.c.maintenance_file.exists():
-                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05', 'migrate-v06'):
+                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05', 'migrate-v06', 'migrate-v07'):
                     # The migration itself is the explicit repair for an older
                     # schema. Check evidence/DB first; it keeps maintenance until
                     # successful completion, just like every other job.
@@ -160,14 +189,19 @@ class Supervisor:
             try:
                 self.d.stop()
                 if action in ("import", "replace",'batch_import'):
+                    from . import providers as _providers
+                    vision_provider = _providers.vision_provider(self.c) if action in ('import', 'replace') else None
+                    payload = dict(payload)
+                    payload['vision_provider'] = vision_provider
                     result = import_material(self.c, **payload)
+                    self._post_import_dual_engine(result)
                     rebuild_projections(self.c)
                     self.d.maintain("index", self.c.materials)
                 elif action == "review":
                     result = review_fact(self.c, payload)
                 elif action == "backup":
                     result = create_backup(self.c,**payload)
-                elif action in ('migrate-v03','migrate-v04','migrate-v05','migrate-v06'):
+                elif action in ('migrate-v03','migrate-v04','migrate-v05','migrate-v06','migrate-v07'):
                     from .store import Store
                     result=Store.migrate(self.c)
                     if resuming_migration:
@@ -229,9 +263,20 @@ class Supervisor:
                                 self.c.log('manager.item_failed', action=action, error=str(e))
                                 result.append(dict(ok=False,material_id=row['material_id'],error=type(e).__name__+': '+str(e)))
                     rebuild_projections(self.c);self.d.maintain('index',self.c.materials)
+                    if action in ('reextract','reextract_current') and isinstance(result,dict):
+                        self._post_import_dual_engine(result)
                 elif action=='candidates':
                     from .candidates import append_candidates
                     result=append_candidates(self.c,payload)
+                elif action=='dual_engine_process':
+                    from .consensus import dual_engine_process
+                    result=dual_engine_process(self.c,payload['material_id'])
+                elif action=='exception.resolve':
+                    from .consensus import resolve_exception
+                    result=resolve_exception(self.c,payload)
+                elif action=='material.reclassify':
+                    from .consensus import reclassify
+                    result=reclassify(self.c,payload)
                 elif action in ("index", "add"):
                     rebuild_projections(self.c)
                     target = self.c.materials if action == "index" else safe_path(self.c.repository_root, payload["relative_root"])

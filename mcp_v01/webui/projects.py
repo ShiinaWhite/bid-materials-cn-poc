@@ -24,10 +24,6 @@ def layout(config, title, content):
                          active='projects', hide_search=True, sys_ok=service.system_ok(config))
 
 
-def actor_field():
-    return '<label class="field"><span>经办人 *</span><input class="input" name="actor" required maxlength="100" value="本机用户" autocomplete="name"></label>'
-
-
 def form(action, pid=None, mid=None, label='保存', body='', css=''):
     hidden = ''.join(f'<input type="hidden" name="{key}" value="{value}">' for key, value in
                      [('project_id', pid), ('material_id', mid)] if value is not None)
@@ -68,11 +64,12 @@ def edit_page(config, pid=None):
     fields = ''.join(f'''<label class="field"><span>{label}{' *' if key=='name' else ''}</span>
         <input class="input" name="{key}" value="{esc(p.get(key))}" maxlength="500" {'required' if key=='name' else ''}></label>'''
         for key, label in [('name', '项目名称'), ('tender_no', '招标编号'), ('tenderer', '招标人'), ('lot_name', '标段名称')])
-    # Basic project creation only requires the project name; actor is an explicit
-    # local workstation identity until a future account system exists.
-    body = fields + '<input type="hidden" name="actor" value="本机用户">'
-    title = '编辑项目' if pid else '新建项目'
-    return layout(config, title, f'<p><a href="{f"/project/{pid}" if pid else "/projects"}">返回项目</a></p><section class="card project-form"><h1>{title}</h1>' +
+    # Manual creation is the advanced path (zero-fill normal path is dropping a
+    # tender document onto the new-project page). Actor is injected server-side.
+    body = fields
+    title = '手动创建项目' if pid else '编辑项目'
+    heading = '编辑项目' if pid else '手动创建项目（高级）'
+    return layout(config, title, f'<p><a href="{f"/project/{pid}" if pid else "/projects"}">返回项目</a></p><section class="card project-form"><h1>{heading}</h1>' +
                   form('project.update' if pid else 'project.create', pid, body=body, label='保存项目') + '</section>')
 
 
@@ -120,8 +117,7 @@ def detail_page(config, pid, params):
     summarized = service.summarize(config, [r['material_id'] for r in p['references']])
     content += '<ul class="plain-list">'
     for m in summarized:
-        button = form('project.material.unlink', pid, m['material_id'], '取消引用',
-                      '<input type="hidden" name="actor" value="本机用户">') if active else ''
+        button = form('project.material.unlink', pid, m['material_id'], '取消引用') if active else ''
         content += f'<li class="project-row"><div><a href="/material/{m["material_id"]}">{esc(m["display"])}</a>{render.type_badge(m["material_type"])}</div>{button}</li>'
     content += ('<li class="muted">尚未引用素材。</li>' if not summarized else '') + '</ul>'
     if active:
@@ -134,7 +130,7 @@ def detail_page(config, pid, params):
             linked = {r['material_id'] for r in p['references']}
             content += '<ul class="plain-list">'
             for m in result['items']:
-                button = '<span class="muted">已引用</span>' if m['material_id'] in linked else form('project.material.link', pid, m['material_id'], '引用到项目', '<input type="hidden" name="actor" value="本机用户">')
+                button = '<span class="muted">已引用</span>' if m['material_id'] in linked else form('project.material.link', pid, m['material_id'], '引用到项目')
                 content += f'''<li class="project-row"><div><a href="/material/{m['material_id']}">{esc(m['display'])}</a>
                     <p>{render.type_badge(m['material_type'])} {render.status_chips(m)}</p>
                     <p class="muted small">有效期：{esc('长期' if m['long_term'] else m['valid_until'] or '待完善')}</p></div>{button}</li>'''
@@ -146,7 +142,8 @@ def detail_page(config, pid, params):
         subject = detail.get('filename') or (f'素材 #{detail["material_id"]}' if detail.get('material_id') else '')
         content += f'<li>{esc(EVENTS.get(row["action"],row["action"]))} {esc(subject)} · {esc(row["actor"])} · {render.fmt_dt(row["at"])}</li>'
     content += '</ul></section><section class="card"><h2>项目归档</h2><p class="muted">归档后仍可查看原件与引用素材；恢复后可继续编辑。</p>'
-    content += form('project.archive' if active else 'project.restore', pid, label='归档项目' if active else '恢复项目', body=actor_field()) + '</section>'
+    content += form('project.archive' if active else 'project.restore', pid,
+                    label='归档项目' if active else '恢复项目') + '</section>'
     content += f'<div data-document-project="{pid}"></div>'
     return layout(config, p['name'], content)
 
@@ -194,26 +191,48 @@ def search_page(config, pid, params):
     return layout(config, '搜索项目文件', content)
 
 
+def new_page(config):
+    """Zero-fill project creation: drop a tender document; fields, matching and
+    bucket are automatic. Manual creation stays as an advanced fallback."""
+    content = f'''<p><a href="/projects">返回项目</a></p>
+    <section class="card project-form"><h1>新建项目</h1>
+    <p class="muted">把招标文件放到这里：系统自动提取项目名称、招标编号、招标人与标段，匹配已有项目或自动新建，文件自动归入“招标资料”。</p>
+    <form class="project-action intake-form" data-action="project.auto_intake">
+      <span class="project-drop">点击选择或拖入招标文件到这里
+      <input class="input" type="file" name="file" accept="{','.join(model.EXTENSIONS)}"></span>
+      <p class="muted small">支持 PDF / Word / Excel / TXT / MD；单文件最大 200MB。</p>
+      <p class="project-error" role="alert"></p>
+      <button class="btn btn-primary" type="submit">自动建档</button>
+    </form>
+    <p class="muted small">如果系统找到多个可能的项目，会提示你手动确认，不会猜。</p></section>
+    <details class="card info-collapse"><summary class="card-head"><h2>手动创建（高级）</h2></summary>'''
+    content += form('project.create', body='<label class="field"><span>项目名称 *</span><input class="input" name="name" required maxlength="500"></label>'
+                    '<label class="field"><span>招标编号</span><input class="input" name="tender_no" maxlength="500"></label>'
+                    '<label class="field"><span>招标人</span><input class="input" name="tenderer" maxlength="500"></label>'
+                    '<label class="field"><span>标段名称</span><input class="input" name="lot_name" maxlength="500"></label>', label='创建项目')
+    content += '</details>'
+    return layout(config, '新建项目', content)
+
+
 def upload_page(config, pid):
     p = model.Projects(config).detail(pid)
     if p['status'] != 'active':
         raise ValueError('项目已归档，请先恢复项目')
-    options = ''.join(f'<option value="{k}">{v}</option>' for k,v in LABELS.items())
     body = f'''<label class="field"><span>文件 *</span>
         <span class="project-drop">点击选择或拖拽项目文件到这里
         <input class="input" type="file" name="file" accept="{','.join(model.EXTENSIONS)}" required></span></label>
-        <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>
-        <label class="field"><span>分类 *</span><select class="input" name="category">{options}</select></label>{actor_field()}'''
+        <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。
+        分类由系统按内容自动判断，无需选择；先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>'''
     return layout(config, '上传项目文件', f'<p><a href="/project/{pid}">返回 {esc(p["name"])}</a></p><section class="card project-form"><h1>上传项目文件</h1>' + form('project.file.add', pid, label='上传项目文件', body=body) + '</section>')
 
 
 class FileJobs(uploads.UploadManager):
-    """Independent project upload action; never calls the material importer."""
+    """Independent project upload/intake action; never calls the material importer."""
     def _run(self, job, staged_path):
         with self.sem:
             try:
-                job.state, job.step = 'running', '正在保存项目原件'
-                job.result = request(self.c, 'project.file.add', dict(job.params, source=str(staged_path), filename=job.filename), timeout=1800)
+                job.state, job.step = 'running', ('正在解析招标文件' if job.mode == 'project.auto_intake' else '正在保存项目原件')
+                job.result = request(self.c, job.mode, dict(job.params, source=str(staged_path), filename=job.filename), timeout=1800)
                 job.state, job.step = 'done', '完成'
             except Exception as error:
                 job.state, job.error = 'error', str(error)
@@ -226,6 +245,9 @@ def write_api(config, req, action):
     payload = req.json()
     if not isinstance(payload, dict):
         return 400, dict(error='请求格式无效')
+    # Zero-fill identity: the workstation writes as local_webui unless a future
+    # account system supplies a real user.
+    payload.setdefault('actor', 'local_webui')
     try:
         result = request(config, action, payload)
         return 200, dict(ok=True, result=result, redirect=f'/project/{result["project_id"]}')
@@ -237,23 +259,30 @@ def write_api(config, req, action):
 
 def upload_api(config, jobs, req):
     q = req.query
+    intake = q.get('intake') == '1'
     try:
         filename, _ = model.validate_filename(q.get('filename'))
-        actor = model.text(q.get('actor'), '经办人', True, 100)
-        pid = int(q.get('project_id', ''))
-        if q.get('category') not in LABELS:
-            raise ValueError('项目文件分类无效')
-        p = model.Projects(config).detail(pid)
-        if p['status'] != 'active':
-            raise ValueError('项目已归档，请先恢复项目')
+        actor = model.text(q.get('actor'), '经办人') or 'local_webui'
+        category = q.get('category')
+        if not intake:
+            pid = int(q.get('project_id', ''))
+            if category is not None and category not in LABELS:
+                raise ValueError('项目文件分类无效')
+            p = model.Projects(config).detail(pid)
+            if p['status'] != 'active':
+                raise ValueError('项目已归档，请先恢复项目')
         size = int(req.headers.get('Content-Length', ''))
         if not 0 < size <= model.MAX_BYTES:
             return 413, dict(error='文件为空或超过 200MB 上限')
         staged, sha, size = uploads.stage_body(config, req.rfile, size)
         try:
             model.validate_signature(staged, Path(filename).suffix.lower())
-            job = jobs.submit('project.file.add', staged, filename, size,
-                              dict(project_id=pid, category=q['category'], actor=actor, expected_sha256=sha))
+            params = dict(filename=filename, actor=actor, expected_sha256=sha)
+            if intake:
+                job = jobs.submit('project.auto_intake', staged, filename, size, params)
+            else:
+                params.update(project_id=pid, category=category)
+                job = jobs.submit('project.file.add', staged, filename, size, params)
         except BaseException:
             staged.unlink(missing_ok=True)
             raise
