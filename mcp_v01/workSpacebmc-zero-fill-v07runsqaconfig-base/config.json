@@ -1,1 +1,0 @@
-{"repository_root": "repo", "db_path": "repo/db/materials.db", "state_dir": "state", "logs_dir": "logs", "backup_dir": "backups", "index_dir": "index/dowse-index", "umi_exe": "rt/umi/Umi-OCR.exe", "dowse_exe": "rt/dowse/dowse.exe", "umi_url": "http://127.0.0.1:19999", "fixture_only": true}
