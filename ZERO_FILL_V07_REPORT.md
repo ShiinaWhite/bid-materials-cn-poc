@@ -5,6 +5,7 @@
 ```text
 REVIEW_BASE_HEAD    = 123be8d3c6f54043bb4fb0a55ecd2d7a2ac875e3 (review 起点)
 FUNCTIONAL_FIX_HEAD = d93cb30 (review 修补轮的功能修复提交)
+TINY_FIX_HEAD       = 95ed417 (最终 tiny fix：policy 短路 + human-fact 冲突展示)
 REPORT_COMMIT       = self（本报告提交自身；最终 HEAD 以 review 时 branch HEAD 为准）
 
 历史说明：主实现 = e2e929e（+2af8274 清理、+报告 commit），BASE = c627510（origin/main）。
@@ -116,6 +117,39 @@ FULL_REGRESSION = NOT_RERUN（沿用 123be8d 前的 251 tests / 0 代码失败�
 REAL_UMI        = NOT_RERUN（沿用此前 PASS）
 REAL_VISION     = NOT_RERUN（沿用此前 PASS；本轮未触碰 provider 传输语义以外的行为）
 BROWSER_QA      = NOT_RERUN（沿用此前 DOM/溢出 PASS；本轮未改页面结构，仅一句文案）
+
+PRODUCTION_TOUCHED = NO
+MERGED_TO_MAIN     = NO
+DEPLOYED           = NO
+```
+
+## FINAL_TINY_FIX（最后一轮 tiny fix，TINY_FIX=95ed417）
+
+```text
+POLICY_EXCLUDED_PRECHECK        = PASS  # machine_verify_allowed/长度预检在 single_chain/ambiguous/
+                                        # disagreement 之前短路 → policy_skipped
+POLICY_SINGLE_CHAIN_NO_REVIEW   = PASS  # scope 仅 OCR 有值 → policy_skipped 含 scope、
+                                        # single_chain 不含、requires_human_review=False
+POLICY_DISAGREEMENT_NO_REVIEW   = PASS  # scope OCR=A/Vision=B → policy_skipped 含 scope、
+                                        # disputed/ambiguous 不含、requires_human_review=False；
+                                        # 超长值同样短路；certificate_no 单链仍 single_chain+review
+HUMAN_FACT_CONFLICT_METADATA    = PASS  # dispute 详情含 kind=human_fact_conflict +
+                                        # existing_human_value（来自权威事实列）+ machine_consensus_value
+HUMAN_FACT_CONFLICT_UI          = PASS  # 展示"与已确认信息不一致"：当前已确认 A vs 新识别结果 B
+                                        # （OCR 与 AI 识别一致）+ 使用新识别值；不再渲染成 OCR/AI 互斥差异；
+                                        # 采纳走 manual_original，reason=
+                                        # human_replaced_verified_fact_with_machine_consensus
+ORDINARY_FIELD_CONFLICT_UI      = PASS  # 普通 OCR≠Vision 仍为双边"存在识别差异"卡片（回归测试）
+
+TARGETED_TESTS = test_zero_fill_review 28/28 PASS + test_zero_fill 42/42 PASS
+               + 详情页渲染相关 test_upload_repair 详情用例 2/2 PASS
+PY_COMPILE     = PASS
+GIT_DIFF_CHECK = PASS
+
+FULL_REGRESSION = NOT_RERUN（沿用既有 accepted 结果）
+REAL_UMI        = NOT_RERUN（沿用既有 accepted 结果）
+REAL_VISION     = NOT_RERUN（沿用既有 accepted 结果）
+BROWSER_QA      = NOT_RERUN（沿用既有 accepted 结果）
 
 PRODUCTION_TOUCHED = NO
 MERGED_TO_MAIN     = NO
