@@ -361,3 +361,141 @@ class MigrationBackupNameTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=1)
+
+
+class PolicyPrecheckTests(unittest.TestCase):
+    """Tiny fix #1: policy-excluded fields short-circuit BEFORE
+    single_chain / ambiguous / disagreement — never an exception."""
+
+    def setUp(self):
+        self.base, self.c = make_config('pre-' + uuid.uuid4().hex[:4])
+
+    def _iso(self):
+        source = license_source(self.c)
+        receipt = import_material(self.c, source, kind='certificate', subtype='iso_cert',
+                                  title='ISO', actor='local_webui',
+                                  ocr_factory=FakeOcr('ISO9001质量管理体系认证证书'))
+        return receipt['material_id'], receipt['files']['original']
+
+    def test_policy_excluded_single_chain_skips_review(self):
+        mid, original = self._iso()
+        seed_candidates(self.c, mid, original, [('scope', '电力工程施工')])
+        # vision reads nothing at all → scope is OCR-only, but policy-excluded
+        receipt = dual_engine_process(self.c, mid, provider=vision_answer({}))
+        self.assertIn('scope', receipt['policy_skipped'])
+        self.assertNotIn('scope', receipt['single_chain'])
+        self.assertFalse(review_required(receipt, [], {'conflict': False}))
+
+    def test_policy_excluded_disagreement_skips_review(self):
+        mid, original = self._iso()
+        seed_candidates(self.c, mid, original, [('scope', '范围A')])
+        receipt = dual_engine_process(self.c, mid, provider=vision_answer({'scope': '范围B'}))
+        self.assertIn('scope', receipt['policy_skipped'])
+        self.assertNotIn('scope', receipt['disputed'])
+        self.assertNotIn('scope', receipt['ambiguous'])
+        self.assertFalse(review_required(receipt, [], {'conflict': False}))
+
+    def test_overlong_value_policy_skips_even_when_allowed_field(self):
+        # certificate_no is machine-verify eligible, but a >200-char value is
+        # prose: no dispute, no review
+        mid, original = self._iso()
+        long_value = '超' * 300
+        seed_candidates(self.c, mid, original, [('certificate_no', long_value)])
+        receipt = dual_engine_process(self.c, mid, provider=vision_answer({'certificate_no': long_value}))
+        self.assertIn('certificate_no', receipt['policy_skipped'])
+        self.assertFalse(review_required(receipt, [], {'conflict': False}))
+
+    def test_real_field_single_chain_still_reviews(self):
+        source = license_source(self.c)
+        receipt = import_material(self.c, source, kind='certificate', subtype='safety_prod_license',
+                                  title='安许', actor='local_webui', ocr_factory=FakeOcr('安全生产许可证'))
+        mid, original = receipt['material_id'], receipt['files']['original']
+        seed_candidates(self.c, mid, original, [('certificate_no', '(晋)JZ安许证字(2026)000001')])
+        receipt = dual_engine_process(self.c, mid, provider=vision_answer({}))
+        self.assertIn('certificate_no', receipt['single_chain'])
+        self.assertNotIn('certificate_no', receipt['policy_skipped'])
+        self.assertTrue(review_required(receipt, [], {'conflict': False}))
+
+
+class HumanFactConflictPresentationTests(unittest.TestCase):
+    """Tiny fix #2: the UI must show the REAL conflict — confirmed human value
+    vs new dual-engine consensus — not "OCR识别 B / AI识别 B 存在识别差异"."""
+
+    def setUp(self):
+        self.base, self.c = make_config('hfc-' + uuid.uuid4().hex[:4])
+        source = license_source(self.c)
+        receipt = import_material(self.c, source, kind='certificate', subtype='business_license',
+                                  title='人工冲突展示', actor='local_webui',
+                                  ocr_factory=FakeOcr('营业执照\n名称 合成测试示例建筑工程有限公司'))
+        self.mid = receipt['material_id']
+        self.original = receipt['files']['original']
+        self.human_name = '人工确认的建筑公司'
+        with Store(self.c) as s:
+            s.verify(self.mid, 'enterprise_name', self.human_name, actor='王审核',
+                     reason='人工核对', evidence_file_id=self.original)
+        seed_candidates(self.c, self.mid, self.original,
+                        [('enterprise_name', zf.NAME), ('unified_social_credit_code', zf.CREDIT)])
+        self.receipt = dual_engine_process(
+            self.c, self.mid,
+            provider=vision_answer({'enterprise_name': zf.NAME,
+                                    'unified_social_credit_code': zf.CREDIT}))
+
+    def test_metadata_carries_both_sides_of_the_real_conflict(self):
+        self.assertIn('enterprise_name', self.receipt['human_conflicts'])
+        disputes = disputes_for(self.c, self.mid)
+        entry = next(d for d in disputes if d['field'] == 'enterprise_name')
+        detail = entry['detail']
+        self.assertEqual(detail['kind'], 'human_fact_conflict')
+        self.assertEqual(detail['existing_human_value'], self.human_name)
+        self.assertEqual(detail['machine_consensus_value'], zf.NAME)
+        # the agreed field still verifies on its own merits
+        self.assertIn('unified_social_credit_code', self.receipt['verified'])
+
+    def test_ui_shows_real_conflict_not_fake_engine_dispute(self):
+        from webui import pages
+        from webui import service
+        with mock.patch.object(service, 'system_ok', return_value=True):
+            html = pages.material_page(self.c, self.mid)
+        self.assertIn('与已确认信息不一致', html)
+        self.assertIn('当前已确认', html)
+        self.assertIn('OCR 与 AI 识别一致', html)
+        self.assertIn(self.human_name, html)
+        self.assertIn('使用新识别值', html)
+        self.assertIn('将继续保留', html)
+        self.assertNotIn('企业名称存在识别差异', html)  # ordinary wording must not appear
+        self.assertNotIn('name="actor"', html)
+
+    def test_ordinary_dispute_wording_unchanged(self):
+        # a plain engine disagreement (no human fact) keeps the two-side card
+        base2, c2 = make_config('hfc2-' + uuid.uuid4().hex[:4])
+        source = license_source(c2)
+        receipt = import_material(c2, source, kind='certificate', subtype='business_license',
+                                  title='普通冲突', actor='local_webui',
+                                  ocr_factory=FakeOcr('营业执照\n名称 合成测试示例建筑工程有限公司'))
+        mid2, original2 = receipt['material_id'], receipt['files']['original']
+        seed_candidates(c2, mid2, original2, [('enterprise_name', zf.NAME)])
+        bad = zf.CREDIT[:-1] + ('0' if zf.CREDIT[-1] != '0' else '1')
+        seed_candidates(c2, mid2, original2, [('unified_social_credit_code', bad)])
+        dual_engine_process(c2, mid2, provider=vision_answer(
+            {'enterprise_name': zf.NAME, 'unified_social_credit_code': zf.CREDIT}))
+        from webui import pages, service
+        with mock.patch.object(service, 'system_ok', return_value=True):
+            html = pages.material_page(c2, mid2)
+        self.assertIn('存在识别差异', html)
+        self.assertIn('OCR 识别', html)
+        self.assertIn('AI 识别', html)
+        self.assertNotIn('与已确认信息不一致', html)
+
+    def test_adopting_consensus_is_honest_human_event(self):
+        from jty_materials.consensus import resolve_exception
+        resolve_exception(self.c, {'material_id': self.mid, 'field': 'enterprise_name',
+                                   'choice': 'ocr'})
+        with Store(self.c, readonly=True) as s:
+            row = s.db.execute("""SELECT verification_method,verified_by,reason FROM verification_event
+                WHERE field_name='enterprise_name' ORDER BY event_id DESC LIMIT 1""").fetchone()
+            name = s.db.execute('SELECT name FROM org WHERE org_id=(SELECT subject_org_id FROM material WHERE material_id=?)',
+                                (self.mid,)).fetchone()[0]
+        self.assertEqual(row['verification_method'], 'manual_original')
+        self.assertEqual(row['verified_by'], 'local_webui')
+        self.assertEqual(row['reason'], 'human_replaced_verified_fact_with_machine_consensus')
+        self.assertEqual(name, zf.NAME)

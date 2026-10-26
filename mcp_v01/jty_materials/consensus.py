@@ -124,6 +124,16 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
             for field in sorted(set(ocr_map) | set(vision_map)):
                 ocr_values = ocr_map.get(field, {})
                 vision_values = vision_map.get(field, {})
+                # Policy precheck (final tiny fix #1): a field the machine
+                # verification policy excludes — or any candidate value longer
+                # than the prose budget — is not a machine-verify candidate at
+                # all. Single-chain / ambiguity / disagreement on such fields
+                # is therefore never an exception; they policy-skip first.
+                if not machine_verify_allowed(field) or any(
+                        len(value) > MACHINE_VERIFY_MAX_LEN
+                        for value in list(ocr_values) + list(vision_values)):
+                    policy_skipped.append(field)
+                    continue
                 if len(ocr_values) > 1 or len(vision_values) > 1:
                     ambiguous[field] = {'ocr': sorted(ocr_values), 'vision': sorted(vision_values)}
                     continue
@@ -143,8 +153,10 @@ def dual_engine_process(config, material_id, actor='local_webui', provider=None)
                 if outcome == 'verified':
                     verified[field] = ocr_value
                 elif outcome == 'conflict':
+                    existing = _fact_value(s.db, material_id, type_code, field)
                     _mark_dispute(s.db, field, ocr_values[ocr_value], vision_values[vision_value],
-                                  ocr_value, vision_value, original, human_fact=True)
+                                  ocr_value, vision_value, original, human_fact=True,
+                                  existing_human_value=existing)
                     disputed[field] = {'ocr': ocr_value, 'vision': vision_value, 'existing_human_fact': True}
                     human_conflicts.append(field)
                 elif outcome == 'validator_failed':
@@ -231,10 +243,18 @@ def _machine_fact(s, material_id, field, value, type_code):
         s.db.execute(f'UPDATE {table} SET {column}=? WHERE {where}', [stored, *params])
 
 
-def _mark_dispute(db, field, ocr_rows, vision_rows, ocr_value, vision_value, original, human_fact=False):
-    detail = json.dumps({'kind': 'human_fact_conflict' if human_fact else 'field_conflict',
-                         'ocr_value': ocr_value, 'vision_value': vision_value,
-                         'original_sha256': original['sha256']}, ensure_ascii=False)
+def _mark_dispute(db, field, ocr_rows, vision_rows, ocr_value, vision_value, original,
+                  human_fact=False, existing_human_value=None):
+    detail = {'kind': 'human_fact_conflict' if human_fact else 'field_conflict',
+              'ocr_value': ocr_value, 'vision_value': vision_value,
+              'original_sha256': original['sha256']}
+    if human_fact:
+        # The real conflict: the authoritative human value versus the new
+        # dual-engine consensus (OCR == Vision here). Both come from ledger /
+        # fact-column state, never guessed.
+        detail['existing_human_value'] = '' if existing_human_value is None else str(existing_human_value)
+        detail['machine_consensus_value'] = ocr_value
+    detail = json.dumps(detail, ensure_ascii=False)
     for row in list(ocr_rows) + list(vision_rows):
         db.execute("""UPDATE extracted_fact SET verification='disputed',verified_at=?,verification_json=?
             WHERE extracted_id=?""", (now(), detail, row['extracted_id']))
@@ -277,6 +297,19 @@ def resolve_exception(config, payload):
     field = payload['field']
     choice = payload['choice']
     original = current_original(config, material_id)
+    # A human picking a side on a human-fact conflict is an explicit human
+    # replacement of a previously verified fact, not an ordinary engine pick.
+    with Store(config, readonly=True) as s:
+        dispute_row = s.db.execute("""SELECT e.verification_json FROM extracted_fact e
+            JOIN extraction_run r USING(run_id)
+            WHERE e.material_id=? AND e.field_name=? AND e.verification='disputed'
+            ORDER BY e.extracted_id LIMIT 1""", (material_id, field)).fetchone()
+    dispute_kind = None
+    if dispute_row is not None:
+        try:
+            dispute_kind = json.loads(dispute_row[0] or '{}').get('kind')
+        except ValueError:
+            dispute_kind = None
     if choice == 'manual':
         value = payload.get('value')
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -295,10 +328,12 @@ def resolve_exception(config, payload):
                 (material_id, field, original['file_id'], prefix + '%')).fetchone()
         if row is None:
             raise ValueError('no pending candidate for the selected engine')
+        reason = ('human_replaced_verified_fact_with_machine_consensus'
+                  if dispute_kind == 'human_fact_conflict'
+                  else 'human_selected_' + choice + '_candidate')
         with Store(config) as s:
             s.verify(material_id, field, row['normalized_value'], actor='local_webui',
-                     reason='human_selected_' + choice + '_candidate',
-                     evidence_file_id=original['file_id'], candidate_id=row['extracted_id'])
+                     reason=reason, evidence_file_id=original['file_id'], candidate_id=row['extracted_id'])
     with Store(config) as s:
         with s.db:
             s.db.execute("""UPDATE extracted_fact SET verification=NULL,verified_at=NULL,verification_json=NULL

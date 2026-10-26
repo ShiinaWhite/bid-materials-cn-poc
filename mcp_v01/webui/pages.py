@@ -412,7 +412,10 @@ def _exception_banner(detail):
 
 
 def _exception_card(config, detail):
-    """Conflict resolution: the click IS the audit event — no actor, no note."""
+    """Conflict resolution: the click IS the audit event — no actor, no note.
+    Ordinary engine disagreements show both sides. A human-fact conflict shows
+    the REAL conflict: the confirmed human value vs the new dual-engine
+    consensus (OCR == Vision), never "OCR识别 A / AI识别 A" as a fake dispute."""
     exceptions = detail.get("exceptions") or []
     if not exceptions:
         return ""
@@ -422,6 +425,35 @@ def _exception_card(config, detail):
     cards = []
     for item in exceptions:
         field_label = catalog.FIELD_LABELS.get(item["field"], item["field"])
+        info = item.get("detail") or {}
+        if info.get("kind") == "human_fact_conflict":
+            confirmed = info.get("existing_human_value")
+            consensus = info.get("machine_consensus_value") or info.get("ocr_value")
+            confirmed_html = esc(confirmed) if confirmed not in (None, "") else '<span class="muted">未记录</span>'
+            cards.append(f"""<div class="exception-item" data-exception="{esc(item["field"])}">
+          <h3>{esc(field_label)}与已确认信息不一致</h3>
+          <div class="exception-side">
+            <span class="chip chip-green">当前已确认</span>
+            <code class="exception-value">{confirmed_html}</code>
+          </div>
+          <div class="exception-side">
+            <span class="chip chip-blue">新识别结果</span>
+            <code class="exception-value">{esc(consensus)}</code>
+            <span class="muted small">OCR 与 AI 识别一致</span>
+            <button class="btn btn-sm" data-resolve-choice="ocr"
+              data-field="{esc(item["field"])}">使用新识别值</button>
+          </div>
+          <div class="exception-actions">
+            {'<a class="btn btn-sm" href="' + base + '" target="_blank">查看原件</a>' if base else ''}
+            <button class="btn btn-sm" data-resolve-manual="{esc(item["field"])}">手动修改</button>
+          </div>
+          <p class="muted small">当前已确认的值将继续保留；除非选择使用新识别值，否则不会更改。</p>
+          <div class="exception-manual hidden">
+            <input class="input" placeholder="输入核对后的正确值">
+            <button class="btn btn-primary btn-sm" data-resolve-manual-save="{esc(item["field"])}">保存</button>
+          </div>
+        </div>""")
+            continue
         sides_html = ""
         for side in item["sides"]:
             who = "AI 识别" if side["side"] == "vision" else "OCR 识别"
