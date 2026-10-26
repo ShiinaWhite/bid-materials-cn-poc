@@ -17,7 +17,7 @@ from . import catalog
 # v0.1 end-to-end test artifacts (clearly titled, kept in the library with
 # their audit history). Until the offline tooling gains a safe archival
 # command, ordinary browsing hides them; direct links still work.
-TEST_MATERIAL_IDS = {1096, 1097}
+TEST_MATERIAL_IDS = {1096, 1097, 1098, 1099}
 
 
 def _rows(db, sql, params=()):

@@ -294,6 +294,12 @@ class Supervisor:
                 elif action=='material.reclassify':
                     from .consensus import reclassify
                     result=reclassify(self.c,payload)
+                elif action=='material.purge_transient':
+                    # Maintenance-only evidence purge (no WebUI/MCP route).
+                    from .purge import purge_transient
+                    result=purge_transient(self.c,payload)
+                    rebuild_projections(self.c)
+                    self.d.maintain('index',self.c.materials)
                 elif action in ("index", "add"):
                     rebuild_projections(self.c)
                     target = self.c.materials if action == "index" else safe_path(self.c.repository_root, payload["relative_root"])
