@@ -16,12 +16,14 @@ from jty_materials.backup import create_backup, restore_backup
 class DocumentManagerTests(DocumentFixture):
     def test_registration_db_failure_never_leaves_a_ghost_job(self):
         fid=self.add(make_pdf(self.base/'registration.pdf'))
+        rid,entry=self.begin(fid);self.complete(rid,entry)  # auto-queued run finishes
+        self.queued.reset_mock()
         with mock.patch.object(project_documents,'audit',side_effect=sqlite3.OperationalError('registration DB failure')):
-            with self.assertRaises(sqlite3.Error):self.begin(fid)
+            with self.assertRaises(sqlite3.Error):self.begin(fid,action='retry')
         self.assertEqual(self.supervisor.documents.capabilities,{})
         self.queued.assert_not_called()
         with Store(self.c,readonly=True) as s:
-            self.assertEqual(s.db.execute('SELECT count(*) FROM project_document_run').fetchone()[0],0)
+            self.assertEqual(s.db.execute('SELECT count(*) FROM project_document_run').fetchone()[0],1)
         rid,entry=self.begin(fid);self.complete(rid,entry)
 
     def test_queued_idempotent_and_compute_outside_operation_maintenance(self):

@@ -291,7 +291,7 @@ def browse(config, params):
     order = params.get("order") or "new"
     page = max(1, int(params.get("page") or 1))
     try:
-        result = service.list_materials(config, type_code=type_code, group=group, q=q,
+        result = service.tolerant_read(service.list_materials, config, type_code=type_code, group=group, q=q,
                                         person=person, validity=validity, page=page, page_size=PAGE_SIZE, order=order)
     except ValueError as e:
         return render.error_page(str(e), sys_ok=service.system_ok(config))

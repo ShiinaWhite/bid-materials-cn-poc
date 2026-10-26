@@ -78,7 +78,8 @@ class V03Tests(unittest.TestCase):
    tables={r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")};history=list(db.execute('SELECT * FROM verification_event'));audits=list(db.execute('SELECT * FROM audit_log'))
   r=Store.migrate(c);self.assertTrue(r['changed']);self.assertFalse(Store.migrate(c)['changed'])
   with Store(c,readonly=True) as s:
-   self.assertEqual({r[0] for r in s.db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}-tables,{'construction_qual_item','material_relation','project','project_file','project_material','project_document','project_document_run','project_document_unit'})
+   self.assertEqual({r[0] for r in s.db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}-tables,{'construction_qual_item','material_relation','project','project_file','project_material','project_document','project_document_run','project_document_unit',
+                  'project_document_image','project_material_candidate'})  # v0.8
    self.assertEqual(s.db.execute('PRAGMA foreign_key_check').fetchall(),[])
    self.assertEqual([tuple(r) for r in s.db.execute('SELECT * FROM verification_event')],history)
    self.assertEqual([tuple(r) for r in s.db.execute('SELECT * FROM audit_log ORDER BY log_id LIMIT ?',(len(audits),))],audits)

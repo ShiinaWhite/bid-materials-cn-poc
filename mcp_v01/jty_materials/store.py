@@ -12,7 +12,7 @@ from contextlib import closing
 
 from .common import digest, now, safe_path
 from .fields import FIELDS, ALLOWED, ORG_FIELDS, GRADE_FIELDS, validate_value, org_norm,field_spec,allowed_field,qualification_name
-from .schema_v07 import upgrade, VERSION
+from .schema_v08 import upgrade, VERSION
 
 
 SCHEMA_VERSION = VERSION
@@ -218,7 +218,7 @@ class Store:
             con.execute('PRAGMA foreign_keys=ON');con.execute('PRAGMA busy_timeout=5000')
             version=con.execute("SELECT meta_value FROM schema_meta WHERE meta_key='schema_version'").fetchone()[0]
             if version==SCHEMA_VERSION:return {'changed':False,'schema':SCHEMA_VERSION}
-            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0','jty-mcp-0.6.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
+            if version not in ('jty-mcp-0.1.0','jty-mcp-0.2.0','jty-mcp-0.3.0','jty-mcp-0.4.0','jty-mcp-0.5.0','jty-mcp-0.6.0','jty-mcp-0.7.0'):raise ValueError('migration only accepts earlier compatible schemas; database was not changed')
             config.backup_dir.mkdir(parents=True,exist_ok=True)
             backup=config.backup_dir/('schema-before-'+SCHEMA_VERSION+'-'+uuid.uuid4().hex[:12]+'.db')
             with backup.open('xb'):pass

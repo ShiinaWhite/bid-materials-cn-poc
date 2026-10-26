@@ -32,9 +32,11 @@ class DocumentSchemaTests(DocumentFixture):
     def test_initialize_and_pending_document_on_upload(self):
         self.add(make_pdf(self.base/'pending.pdf'))
         with Store(self.c,readonly=True) as s:
-            self.assertEqual(SCHEMA_VERSION,'jty-mcp-0.7.0')
-            self.assertEqual(s.db.execute('SELECT status FROM project_document').fetchone()[0],'pending')
-            self.assertEqual(s.db.execute('SELECT count(*) FROM project_document_run').fetchone()[0],0)
+            self.assertEqual(SCHEMA_VERSION,'jty-mcp-0.8.0')
+            # v0.8 zero-fill: the upload itself queues extraction, so the
+            # document leaves 'pending' immediately and one run exists.
+            self.assertEqual(s.db.execute('SELECT status FROM project_document').fetchone()[0],'queued')
+            self.assertEqual(s.db.execute('SELECT count(*) FROM project_document_run').fetchone()[0],1)
             self.assertEqual(s.db.execute('PRAGMA foreign_key_check').fetchall(),[])
 
     def test_initialization_upgrade_failure_rolls_back_all_schema(self):

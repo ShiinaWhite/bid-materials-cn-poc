@@ -74,16 +74,21 @@ class DocumentExtractTests(DocumentFixture):
         self.assertIn('按月支付',hit['snippet'])
         self.assertIsNone(hit['page_no'])
 
-    def test_docx_images_deferred_without_ocr(self):
+    def test_docx_tiny_decorative_image_skipped_without_ocr(self):
         from docx import Document
         from PIL import Image
         path=self.base/'image.docx'; image=self.base/'image.png'
         Image.new('RGB',(50,50),'white').save(image)
         doc=Document();doc.add_picture(str(image));doc.save(path)
-        with mock.patch.object(StubOcr,'recognize',side_effect=AssertionError('no image OCR')):
+        with mock.patch.object(StubOcr,'recognize',side_effect=AssertionError('decorative image must not OCR')):
             _, result=self.process(path)
-        self.assertEqual(result['status'],'partial')
-        self.assertIn('embedded_image_ocr=deferred',result['error'])
+        self.assertEqual(result['status'],'complete')
+        with Store(self.c, readonly=True) as s:
+            rows=[dict(r) for r in s.db.execute('SELECT * FROM project_document_image')]
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['ocr_status'],'skipped')
+        self.assertIn('decorative',rows[0]['ocr_error'])
+        self.assertEqual(result['summary']['embedded_images']['skipped'],1)
 
     def test_real_xlsx_sheet_sparse_rows_and_inert_formulas(self):
         _, result=self.process(make_xlsx(self.base/'bill.xlsx'))

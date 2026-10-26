@@ -22,7 +22,7 @@ def main():
     init.add_argument("--dowse", default=str(project / "runtime/dowse/dowse.exe"))
     init.add_argument("--fixture-only", action="store_true")
     watch = commands.add_parser("watch"); watch.add_argument("action", choices=["start", "stop", "status"])
-    commands.add_parser("index"); commands.add_parser("health"); commands.add_parser("shutdown"); commands.add_parser("backup");commands.add_parser('migrate-v02');commands.add_parser('migrate-v03');commands.add_parser('migrate-v04');commands.add_parser('migrate-v05');commands.add_parser('migrate-v06')
+    commands.add_parser("index"); commands.add_parser("health"); commands.add_parser("shutdown"); commands.add_parser("backup");commands.add_parser('migrate-v02');commands.add_parser('migrate-v03');commands.add_parser('migrate-v04');commands.add_parser('migrate-v05');commands.add_parser('migrate-v06');commands.add_parser('migrate-v07');commands.add_parser('migrate-v08')
     commands.add_parser('project-document-index-rebuild')
     for action in ('extract','retry','rebuild'):
         command = commands.add_parser('project-document-'+action)
@@ -71,7 +71,7 @@ def main():
     if args.command.startswith('project-document-'):
         action = args.command.removeprefix('project-document-').replace('-', '.')
         return request(config, 'project.document.'+action, {k: getattr(args,k) for k in ('project_id','project_file_id') if hasattr(args,k)})
-    if args.command in ("index", "health", "backup", "shutdown",'migrate-v02','migrate-v03','migrate-v04','migrate-v05','migrate-v06'):
+    if args.command in ("index", "health", "backup", "shutdown",'migrate-v02','migrate-v03','migrate-v04','migrate-v05','migrate-v06','migrate-v07','migrate-v08'):
         if args.command=='migrate-v02':raise ValueError('v0.3 code requires explicit migrate-v03; use the v0.2 snapshot for an exact v0.2 migration')
         return request(config, args.command, start=args.command != "shutdown")
     if args.command == "add":

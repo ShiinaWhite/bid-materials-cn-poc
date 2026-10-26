@@ -32,14 +32,14 @@ class DocumentWebuiTests(test_project_webui.ProjectHttpFixture):
         path=make_pdf(self.base/'pending.pdf')
         fid=self.call('project.file.add',project_id=self.pid,source=str(path),filename=path.name,category='other',expected_sha256=digest(path))['project_file_id']
         status,body,_=self.http('GET',f'/api/project/{self.pid}/documents')
-        self.assertEqual(status,200);self.assertEqual(json.loads(body)['items'][0]['status'],'pending')
+        self.assertEqual(status,200);self.assertEqual(json.loads(body)['items'][0]['status'],'queued')  # v0.8: upload auto-queues
         for action in ('extract','retry','rebuild'):
             self.assertEqual(self.http('POST','/api/project/document/'+action,b'unread',{'Origin':'https://evil.example'})[0],403)
         self.assertEqual(self.post('document/extract',project_id=self.pid,project_file_id=fid,source='C:/secret.pdf')[0],400)
         self.assertEqual(self.post('document/extract',project_id=self.pid,project_file_id=fid)[0],200)
         status,body,_=self.http('GET',f'/api/project/{self.pid}/documents')
         self.assertEqual(json.loads(body)['items'][0]['status'],'queued')
-        self.assertIn('等待整理',self.http('GET',f'/project/{self.pid}')[1].decode())
+        self.assertIn('等待自动整理',self.http('GET',f'/project/{self.pid}')[1].decode())
 
     def test_search_results_pages_sections_sheets_escaped_and_download_trace(self):
         fid=self.process(make_pdf(self.base/'招标文件.pdf'))
@@ -49,14 +49,14 @@ class DocumentWebuiTests(test_project_webui.ProjectHttpFixture):
             status,body,_=self.http('GET',f'/project/{self.pid}/search?q='+quote(term))
             self.assertEqual(status,200);self.assertIn(expected,body.decode())
         html=self.http('GET',f'/project/{self.pid}')[1].decode()
-        self.assertIn('已可搜索',html);self.assertIn('搜索项目文件',html)
+        self.assertIn('全文搜索已就绪',html);self.assertIn('搜索项目文件',html)
         self.assertEqual(self.http('GET',f'/project-file/{self.pid}/{fid}')[0],200)
 
     def test_partial_failed_processing_and_index_unavailable_ui(self):
         fid=self.process(make_pdf(self.base/'states.pdf'))
         with Store(self.c) as s:
             s.document_write=True
-            for state,label in [('processing','正在整理内容'),('partial','部分内容未识别'),('failed','内容提取失败')]:
+            for state,label in [('processing','正在读取文档'),('partial','字正文'),('failed','内容提取失败')]:
                 with s.db:s.db.execute('UPDATE project_document SET status=?',(state,))
                 html=self.http('GET',f'/project/{self.pid}')[1].decode()
                 self.assertIn(label,html)

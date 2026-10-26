@@ -7,6 +7,21 @@ Material detail reuses Query.get_material unchanged and only annotates it.
 """
 import datetime as dt
 import json
+import time
+
+
+def tolerant_read(function, *args, attempts=4, delays=(0.02, 0.1, 0.4, 0.8), **kwargs):
+    """Retry an optimistic read across a generation bump. Since v0.8 an
+    upload keeps extracting in the background, so ordinary browsing can race
+    the document pipeline's own publishes; the same local retry the documents
+    status API already uses belongs on every user-facing read."""
+    for attempt in range(attempts):
+        try:
+            return function(*args, **kwargs)
+        except RuntimeError as error:
+            if 'RETRY:' not in str(error) or attempt == attempts - 1:
+                raise
+            time.sleep(delays[attempt])
 
 from jty_materials.common import safe_path
 from jty_materials.query import Query

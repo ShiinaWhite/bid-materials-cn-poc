@@ -354,8 +354,8 @@ class MigrationBackupNameTests(unittest.TestCase):
 
     def test_backup_name_uses_target_schema_version(self):
         from jty_materials.store import SCHEMA_VERSION
-        self.assertEqual(SCHEMA_VERSION, 'jty-mcp-0.7.0')
-        self.assertTrue(SCHEMA_VERSION.startswith('jty-mcp-0.7'))
+        self.assertEqual(SCHEMA_VERSION, 'jty-mcp-0.8.0')
+        self.assertTrue(SCHEMA_VERSION.startswith('jty-mcp-0.8'))
         self.assertNotIn('v06', 'schema-before-' + SCHEMA_VERSION)
 
 

@@ -16,7 +16,8 @@ EVENTS = {'project.create': '创建项目', 'project.update': '编辑项目', 'p
           'project.restore': '恢复项目', 'project.file.add': '上传项目文件',
           'project.document.extract': '整理文档内容', 'project.document.retry': '重试整理文档内容',
           'project.document.rebuild': '重新整理文档内容',
-          'project.material.link': '引用素材', 'project.material.unlink': '取消素材引用'}
+          'project.material.link': '引用素材', 'project.material.unlink': '取消素材引用',
+          'project.material.autolink': '自动关联素材', 'project.material.discover': '识别素材候选'}
 
 
 def layout(config, title, content):
@@ -83,7 +84,7 @@ def reverse_section(config, mid):
 
 
 def detail_page(config, pid, params):
-    p = model.Projects(config).detail(pid)
+    p = service.tolerant_read(model.Projects(config).detail, pid)
     active = p['status'] == 'active'
     controls = (f'<a class="btn" href="/project/{pid}/edit">编辑项目</a>'
                 f'<a class="btn btn-primary" href="/project/{pid}/upload">上传项目文件</a>') if active else ''
@@ -93,7 +94,7 @@ def detail_page(config, pid, params):
         <section class="card"><dl class="project-meta"><dt>招标编号</dt><dd>{esc(p['tender_no'] or '—')}</dd>
         <dt>招标人</dt><dd>{esc(p['tenderer'] or '—')}</dd><dt>标段名称</dt><dd>{esc(p['lot_name'] or '—')}</dd></dl></section>
         <section class="card"><h2>项目文件</h2>'''
-    documents = {d['project_file_id']: d for d in Documents(config).status(pid)}
+    documents = {d['project_file_id']: d for d in service.tolerant_read(Documents(config).status, pid)}
     content += f'<p><a class="btn" href="/project/{pid}/search">搜索项目文件</a></p><p class="muted small">历史文件仅供参考，内容不代表公司当前有效资质。</p>'
     for key, label in LABELS.items():
         files = []
@@ -106,14 +107,16 @@ def detail_page(config, pid, params):
             doc_state = document_state(doc)
             action = ''
             if active and f['extension'] in SUPPORTED and doc.get('status') not in ('queued','processing'):
-                label = '提取内容' if doc.get('status') == 'pending' else '重新整理'
-                action = form('project.document.extract', pid, label=label, body=f'<input type="hidden" name="project_file_id" value="{f["project_file_id"]}">')
+                # Recovery entry only; the normal path extracts on upload.
+                button = '提取内容' if doc.get('status') == 'pending' else '重新整理'
+                action = form('project.document.extract', pid, label=button, body=f'<input type="hidden" name="project_file_id" value="{f["project_file_id"]}">')
             files.append(f'''<li class="project-row"><div><strong>{esc(f['filename'])}</strong>
                 <p class="muted small">{render.fmt_bytes(f['size_bytes'])} · {render.fmt_dt(f['imported_at'])} · {esc(f['imported_by'])}</p>
-                <p class="muted small" data-document-file="{f['project_file_id']}">文档内容：{esc(doc_state)}</p></div>
+                <p class="muted small" data-document-file="{f['project_file_id']}">文档内容：{esc(doc_state)}</p>
+                {document_summary_html(doc)}</div>
                 <div class="project-controls">{action}{view}<a class="btn" href="{url}?download=1">下载</a></div></li>''')
         content += f'<h3>{label}</h3><ul class="plain-list">{"".join(files) or "<li class=muted>暂无文件</li>"}</ul>'
-    content += '</section><section class="card" id="references"><h2>引用素材</h2>'
+    content += '</section>' + candidates_section(config, pid, active) + '<section class="card" id="references"><h2>引用素材</h2>'
     summarized = service.summarize(config, [r['material_id'] for r in p['references']])
     content += '<ul class="plain-list">'
     for m in summarized:
@@ -126,7 +129,7 @@ def detail_page(config, pid, params):
             <label class="field"><span>素材关键词</span><input class="input" name="q" maxlength="500" required value="{esc(q)}" placeholder="项目经理、安全生产许可证、10kV"></label>
             <button class="btn" type="submit">搜索已有素材</button></form>'''
         if q:
-            result = service.list_materials(config, q=q, page=int(params.get('page', 1)))
+            result = service.tolerant_read(service.list_materials, config, q=q, page=int(params.get('page', 1)))
             linked = {r['material_id'] for r in p['references']}
             content += '<ul class="plain-list">'
             for m in result['items']:
@@ -148,23 +151,159 @@ def detail_page(config, pid, params):
     return layout(config, p['name'], content)
 
 
+def _fmt(n):
+    return f'{n:,}'.replace(',', '，') if isinstance(n, int) else str(n)
+
+
+def _summary(doc):
+    try:
+        value = json.loads(doc.get('summary_json') or '{}')
+        return value if isinstance(value, dict) else {}
+    except ValueError:
+        return {}
+
+
 def document_state(doc):
+    """One honest, information-carrying line per document. This is the live
+    label the WebUI polls; the structured card below it renders the same
+    summary with full detail after each reload."""
     status = doc.get('status', 'pending')
-    labels = dict(pending='未处理', queued='等待整理', processing='正在整理内容', complete='已可搜索',
-                  partial='部分内容未识别', failed='内容提取失败', unsupported='暂不支持提取，可下载原件')
-    label = labels.get(status, '未处理')
+    summary = _summary(doc)
     if doc.get('extension') not in SUPPORTED:
-        label = '暂不支持提取，可下载原件'
-    if doc.get('index_status') == 'failed':
-        label += '；搜索待修复，请重新整理'
-    if status == 'processing' and doc.get('total_units') is not None:
-        kind = '页' if doc.get('progress_kind') == 'page' else '个工作表'
-        label += f'（{doc.get("processed_units",0)} / {doc["total_units"]} {kind}）'
-    return label
+        return '暂不支持内容提取，可下载原件'
+    if status == 'processing':
+        kind, processed, total = doc.get('progress_kind'), doc.get('processed_units') or 0, doc.get('total_units')
+        if kind == 'image' and total:
+            return f'正在识别扫描图片 {processed} / {total}……'
+        if kind == 'native_text':
+            return '正文读取完成，正在识别扫描图片……'
+        return '正在读取文档……'
+    if status == 'queued':
+        return '等待自动整理……'
+    if status == 'pending':
+        return '等待整理'
+    if status == 'failed':
+        return '内容提取失败：' + (doc.get('error') or '未知错误')[:120]
+    native = summary.get('native_text') or {}
+    images = summary.get('embedded_images')
+    discovery = summary.get('discovery') or {}
+    parts = []
+    if native.get('units'):
+        parts.append(f"✓ {_fmt(native.get('chars') or 0)} 字正文 · {native['units']} 个文本单元")
+    if images is not None and images.get('total'):
+        failed = images.get('failed') or 0
+        note = f"⚠ {images['total']} 张图片（{failed} 张识别失败）" if failed else \
+            f"✓ {images['total']} 张图片已识别（{_fmt(images.get('ocr_chars') or 0)} 字）"
+        parts.append(note)
+    if doc.get('index_status') == 'ready' and (native.get('units') or (images or {}).get('ocr_units')):
+        parts.append('✓ 全文搜索已就绪')
+    if discovery.get('candidates'):
+        parts.append(f"发现素材候选 {discovery['candidates']}")
+    problems = summary.get('problems') or []
+    if status == 'partial' and problems:
+        parts.append('⚠ ' + '；'.join(str(p) for p in problems)[:120])
+    elif status == 'partial' and not parts:
+        parts.append('部分内容未识别')
+    return ' · '.join(parts) or '已保存原件'
+
+
+def document_summary_html(doc):
+    """Structured extraction card: every ✓/⚠ line the DB can honestly report."""
+    summary = _summary(doc)
+    rows = []
+
+    def row(ok, text):
+        rows.append(f'<li class="{"ok" if ok else "warn"}">{"✓" if ok else "⚠"} {text}</li>')
+
+    native = summary.get('native_text') or {}
+    if native.get('units'):
+        row(True, f"{_fmt(native.get('chars') or 0)} 字正文，{native['units']} 个文本单元")
+    pages = summary.get('pages') or {}
+    if pages.get('native'):
+        row(True, f"{sum(v for k, v in pages.items() if k != 'failed')} 页（原生 {pages.get('native', 0)}"
+                  f" / 扫描识别 {pages.get('ocr', 0)} / 空白 {pages.get('empty', 0)}）")
+    if pages.get('failed'):
+        row(False, f"{pages['failed']} 页提取失败")
+    images = summary.get('embedded_images')
+    if images is not None:
+        if images.get('total'):
+            failed, skipped = images.get('failed') or 0, images.get('skipped') or 0
+            if failed:
+                row(False, f"扫描图片 {images['total']} 张：识别 {images.get('done', 0) - skipped}，"
+                           f"失败 {failed}，跳过 {skipped}（装饰图/超限）")
+            else:
+                row(True, f"扫描图片 {images['total']} 张已识别（OCR 文字 {_fmt(images.get('ocr_chars') or 0)} 字）")
+            if images.get('reused'):
+                rows.append(f'<li class="muted small">复用上次识别结果 {images["reused"]} 张，仅重试失败项</li>')
+        else:
+            row(True, '未发现扫描图片')
+    if doc.get('index_status') == 'ready':
+        row(True, '全文搜索已就绪')
+    elif doc.get('index_status') == 'failed':
+        row(False, '搜索索引待修复，请重新整理')
+    discovery = summary.get('discovery') or {}
+    if discovery.get('candidates'):
+        detail = []
+        if discovery.get('exact_matches'):
+            detail.append(f"{discovery['exact_matches']} 项已自动关联素材库")
+        if discovery.get('new_candidates'):
+            detail.append(f"{discovery['new_candidates']} 项新素材待确认")
+        if discovery.get('possible_matches'):
+            detail.append(f"{discovery['possible_matches']} 项疑似已有")
+        row(True, f"发现素材候选 {discovery['candidates']}" + ('（' + '，'.join(detail) + '）' if detail else ''))
+    problems = summary.get('problems') or []
+    for problem in problems:
+        row(False, esc(str(problem)))
+    if doc.get('error') and doc.get('status') == 'failed':
+        row(False, esc(doc['error'][:200]))
+    if not rows:
+        rows.append('<li class="muted">尚未整理内容</li>')
+    return '<ul class="doc-summary">' + ''.join(rows) + '</ul>'
+
+
+_MATCH_LABELS = dict(new_candidate=('新素材', 'chip-blue'), possible_match=('疑似已有', 'chip-amber'),
+                     exact_match=('已关联素材库', 'chip-green'))
+_LIFECYCLE_LABELS = dict(reusable='可复用', project_only='项目专用', transient='时效性', unknown='待判定')
+
+
+def candidates_section(config, pid, active):
+    rows = service.tolerant_read(Documents(config).candidates, pid)
+    if not rows:
+        return ''
+    groups = {}
+    for row in rows:
+        subject = row['subject_name'] or row['subject_person'] or '主体待识别'
+        groups.setdefault(subject, []).append(row)
+    items = []
+    for subject, group in groups.items():
+        entries = []
+        for row in group:
+            label, kind = _MATCH_LABELS.get(row['match_status'], ('新素材', 'chip-blue'))
+            identity = row['subject_uscc'] or row['identifier'] or row['subject_id_masked'] or ''
+            location = f"第 {row['image_order']} 张扫描图片" if row['source_kind'] == 'embedded_image' \
+                else f"正文单元 {row['source_unit_index']}"
+            heading = row['nearest_heading'] or row['source_section'] or ''
+            source = (f"{esc(row['filename'])} · {location}"
+                      + (f"（{esc(heading[:40])}）" if heading else ''))
+            link = f'<a href="/material/{row["matched_material_id"]}">查看素材 →</a>' \
+                if row['matched_material_id'] else \
+                f'<a href="{render.build_url(f"/project/{pid}/search", q=(row["subject_uscc"] or row["identifier"] or row["subject_name"] or row["candidate_type"]))}">查看识别文字 →</a>'
+            entries.append(
+                f'''<li class="candidate-row"><div>{render.type_badge(row['candidate_type'])}
+                    {render.chip(label, kind)}{render.chip(_LIFECYCLE_LABELS.get(row['lifecycle'], '待判定'), 'chip-gray')}
+                    <p class="muted small">{esc(identity)}{('（置信 ' + row['confidence'] + '）') if row['confidence'] != 'high' else ''}</p></div>
+                    <p class="muted small">来源：{source}</p><div>{link}</div></li>''')
+        uscc = next((r['subject_uscc'] for r in group if r['subject_uscc']), '')
+        items.append(f'<li><strong>{esc(subject)}</strong>'
+                     + (f'<p class="muted small">统一社会信用代码 {esc(uscc)}</p>' if uscc else '')
+                     + f'<ul class="plain-list">{"".join(entries)}</ul></li>')
+    return f'''<section class="card" id="candidates"><h2>发现素材（{len(rows)}）</h2>
+        <p class="muted small">以下素材由文档内容自动识别，未经人工确认前不会写入素材库；“已关联素材库”表示确定性匹配（证件号码/信用代码精确一致）。</p>
+        <ul class="plain-list candidate-groups">{''.join(items)}</ul></section>'''
 
 
 def search_page(config, pid, params):
-    p = model.Projects(config).detail(pid)
+    p = service.tolerant_read(model.Projects(config).detail, pid)
     q = params.get('q', '').strip()
     content = f'''<p><a href="/project/{pid}">返回 {esc(p['name'])}</a></p><section class="card">
         <h1>搜索项目文件</h1><p class="muted">仅搜索当前项目。历史文件仅供参考，不代表公司当前有效资质。</p>
@@ -173,10 +312,17 @@ def search_page(config, pid, params):
         <button class="btn btn-primary" type="submit">搜索</button></form>'''
     if q:
         try:
-            result = Documents(config).search(pid, q, params.get('page', 1))
+            result = service.tolerant_read(Documents(config).search, pid, q, params.get('page', 1))
             content += f'<p>找到 {result["total"]} 处内容</p><ul class="plain-list document-results">'
             for item in result['items']:
-                location = f'第 {item["page_no"]} 页' if item['page_no'] else item['section_path']
+                if item['unit_type'] == 'embedded_image':
+                    location = f"扫描图片 第 {item['image_order']} 张"
+                    if item.get('section_path'):
+                        location += f" · {item['section_path']}"
+                elif item['page_no']:
+                    location = f'第 {item["page_no"]} 页'
+                else:
+                    location = item['section_path']
                 if item['sheet_name']:
                     location = f'Sheet：{item["sheet_name"]} · 第 {item["row_start"]}–{item["row_end"]} 行'
                 url = f'/project-file/{pid}/{item["project_file_id"]}'
@@ -222,7 +368,7 @@ def upload_page(config, pid):
         <span class="project-drop">点击选择或拖拽项目文件到这里
         <input class="input" type="file" name="file" accept="{','.join(model.EXTENSIONS)}" required></span></label>
         <p class="muted small">支持 PDF、PNG/JPG、Word、Excel、PowerPoint、TXT、MD、ZIP；单文件最大 200MB。
-        系统会根据文件名及可识别内容自动分类，无需选择；先保存原件，之后可在项目中提取 PDF、DOCX、XLSX、TXT、MD 内容。</p>'''
+        系统会根据文件名及可识别内容自动分类；上传后自动整理可读内容（含 Word 内嵌扫描图片 OCR）并识别素材候选。</p>'''
     return layout(config, '上传项目文件', f'<p><a href="/project/{pid}">返回 {esc(p["name"])}</a></p><section class="card project-form"><h1>上传项目文件</h1>' + form('project.file.add', pid, label='上传项目文件', body=body) + '</section>')
 
 

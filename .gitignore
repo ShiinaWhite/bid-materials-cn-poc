@@ -57,3 +57,6 @@ tmp/
 *.bak
 Thumbs.db
 Desktop.ini
+
+# v0.8 local verification fixture: real production-like binaries/files, never committed
+local-fixture/

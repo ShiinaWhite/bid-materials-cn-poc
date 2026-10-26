@@ -194,7 +194,7 @@ class Supervisor:
             resuming_migration = False
             # A previous failed recovery must be reconciled before any new write.
             if self.c.maintenance_file.exists():
-                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05', 'migrate-v06', 'migrate-v07'):
+                if action in ('migrate-v03', 'migrate-v04', 'migrate-v05', 'migrate-v06', 'migrate-v07', 'migrate-v08'):
                     # The migration itself is the explicit repair for an older
                     # schema. Check evidence/DB first; it keeps maintenance until
                     # successful completion, just like every other job.
@@ -218,7 +218,7 @@ class Supervisor:
                     result = review_fact(self.c, payload)
                 elif action == "backup":
                     result = create_backup(self.c,**payload)
-                elif action in ('migrate-v03','migrate-v04','migrate-v05','migrate-v06','migrate-v07'):
+                elif action in ('migrate-v03','migrate-v04','migrate-v05','migrate-v06','migrate-v07','migrate-v08'):
                     from .store import Store
                     result=Store.migrate(self.c)
                     if resuming_migration:
@@ -226,6 +226,15 @@ class Supervisor:
                 elif action.startswith('project.'):
                     from .projects import execute
                     result = execute(self.c, action, payload)
+                    if action in ('project.file.add', 'project.auto_intake'):
+                        # Zero-fill: a stored project original is extracted
+                        # without a second click. Queueing is best-effort; a
+                        # queueing failure never fails the committed upload.
+                        try:
+                            self.documents.auto_extract(result, payload.get('actor'))
+                        except Exception as error:
+                            self.c.log('project.document.auto_enqueue_failed',
+                                       error=str(error)[:500])
                 elif action=='phase_import':
                     from .phase_ocr import PhaseOcr
                     if self.phase_ocr is None:self.phase_ocr=PhaseOcr(self.c)
