@@ -5,7 +5,7 @@ Phase 1 vertical slice：上传 → 自动整理 → DOCX 原生文字 + 内嵌�
 
 ```text
 BASE_HEAD        = 8455167 (origin/main, 含生产验证 purge 能力纳入)
-FINAL_BRANCH_HEAD= 见本文件提交（commit 后填写于 git log）
+FINAL_BRANCH_HEAD= af2733c (origin/project-document-intelligence-v08)
 
 AUTO_EXTRACTION  = PASS   上传/自动建档成功即入队整理，无第二次点击；
                           "重新整理/提取内容"保留为恢复入口
