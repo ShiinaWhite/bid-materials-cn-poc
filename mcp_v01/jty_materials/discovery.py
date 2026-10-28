@@ -18,6 +18,7 @@ import uuid
 from .classify import ocr_classify
 from .common import now
 from .fields import org_norm
+from .normalize import uscc_valid
 from .workflow import audit
 
 USCC_CHARS = set('0123456789ABCDEFGHJKLMNPQRTUWXY')
@@ -32,6 +33,8 @@ _PERSON_NAME_PATTERN = re.compile(r'姓\s*名[:：]?\s*([\u4e00-\u9fff]{2,4})')
 _PERSON_ID_PATTERN = re.compile(r'(?:公民身份号码|身份证号|身份证号码|身份证)[:：]?\s*(\d{17}[\dXx])')
 _LEGAL_REP_PATTERN = re.compile(r'法定代表人[:：]?\s*([\u4e00-\u9fff]{2,4})')
 PERSON_TYPES = {'person_id_card'}
+AUTOLINK_ACTOR = 'project-intelligence'
+AUTOLINK_METHOD = 'project_document_exact_match'
 
 # Lifecycle first rules: content-driven, never title-only. Anything the rules
 # cannot decide stays 'unknown' for human triage instead of being guessed.
@@ -42,13 +45,28 @@ REUSABLE_TYPES = frozenset({
     'person_id_card', 'person_title_cert', 'person_registered_cert', 'person_special_op',
     'person_safety_cert', 'person_education', 'person_social_security',
 })
-TRANSIENT_MARKERS = ('信用中国', '失信被执行人', '查询时间', '生成时间', '报告编号', '查询结果', '严重违法')
+# Transient evidence must prove a point-in-time PUBLIC QUERY, not merely the
+# shape of a report. '报告编号'/'生成时间' alone appear on formal rating
+# reports, which are long-lived evidence and must never be transient.
+TRANSIENT_QUERY_MARKERS = ('信用中国', '公共信用信息报告', '失信被执行人查询', '裁判文书网查询',
+                           '国家企业信用信息公示系统', 'creditchina.gov.cn', 'wenshu.court.gov.cn')
 EVIDENCE_LIMIT = 400
 
 
+def transient_evidence(text):
+    """A single strong public-query marker, or the 查询时间+查询结果 pair."""
+    text = text or ''
+    if any(marker in text for marker in TRANSIENT_QUERY_MARKERS):
+        return True
+    return '查询时间' in text and '查询结果' in text
+
+
 def extract_usccs(text):
+    """All GB 32100-2015 checksum-valid unified credit codes in the text.
+    Shaped-but-invalid 18-char strings (including personal ID numbers) stay in
+    the OCR evidence but never become organizational identity."""
     codes = {re.sub(r'\s+', '', c) for c in _USCC_PATTERN.findall(text or '')}
-    return sorted(c for c in codes if len(c) == 18 and set(c) <= USCC_CHARS)
+    return sorted(c for c in codes if len(c) == 18 and set(c) <= USCC_CHARS and uscc_valid(c))
 
 
 def _first(pattern, text):
@@ -79,11 +97,11 @@ def subject_hints(candidate_type, text):
 
 def lifecycle_for(candidate_type, text):
     """LIFECYCLE: reusable by material type, transient only with point-in-time
-    evidence markers in the content itself (titles lie — the production
-    transient-purge campaigns proved that)."""
+    public-query evidence in the content itself. A formal rating report keeps
+    report numbers and issue dates — those alone must never mark it transient."""
     if candidate_type in REUSABLE_TYPES:
         return 'reusable'
-    if candidate_type == 'credit_report' and any(m in (text or '') for m in TRANSIENT_MARKERS):
+    if candidate_type == 'credit_report' and transient_evidence(text):
         return 'transient'
     return 'unknown'
 
@@ -127,6 +145,31 @@ def match_library(db, candidate_type, hints):
     return 'new_candidate', None
 
 
+def candidate_identity(candidate_type, hints, unit):
+    """Dedup identity at the strongest evidence level available:
+
+    1. deterministic subject identity (validated USCC / identifier / person id)
+    2. normalized subject name (org_norm — never raw strings)
+    3. source identity only — when nothing about the subject is known, two
+       candidates must NEVER be collapsed across sources: keeping two
+       to-confirm candidates is always safer than silently swallowing a
+       second company's material.
+    """
+    if candidate_type in PERSON_TYPES:
+        if hints['subject_id_masked']:
+            return ('person-id', candidate_type, hints['subject_id_masked'])
+        if hints['subject_person']:
+            return ('person-name', candidate_type, hints['subject_person'])
+    else:
+        if hints['subject_uscc']:
+            return ('uscc', candidate_type, hints['subject_uscc'])
+        if hints['identifier']:
+            return ('identifier', candidate_type, hints['identifier'])
+        if hints['subject_name']:
+            return ('name', candidate_type, org_norm(hints['subject_name']))
+    return ('source', candidate_type, unit['unit_id'])
+
+
 def detect(units):
     """Yield candidate dicts from current-run units. Image OCR text stands on
     its own (a scanned certificate is the document); native text additionally
@@ -144,13 +187,12 @@ def detect(units):
         is_image = unit['unit_type'] == 'embedded_image'
         if not is_image and not (hints['subject_uscc'] or hints['identifier']):
             continue
-        identity = (code, hints['subject_uscc'], hints['subject_person'],
-                    hints['subject_id_masked'], hints['identifier'])
+        identity = candidate_identity(code, hints, unit)
         if identity in seen:
             continue
         seen.add(identity)
         confidence = 'high' if (hints['subject_uscc'] or hints['identifier'] or
-                                (is_image and hints['subject_person'])) else 'medium'
+                                (is_image and (hints['subject_person'] or hints['subject_id_masked']))) else 'medium'
         found.append(dict(unit=unit, candidate_type=code, basis=basis, confidence=confidence,
                           evidence=_evidence(text), hints=hints,
                           lifecycle=lifecycle_for(code, text)))
@@ -159,25 +201,73 @@ def detect(units):
 
 def _link_exact(s, pid, material_id, document_id, candidate_id):
     """Create the project reference for a deterministic exact match (spec #17).
-    Idempotent: an existing active reference is left untouched."""
+    Idempotent: an existing active reference is left untouched. A previously
+    auto-removed reference is restored WITH fresh provenance so the next
+    autounlink pass can still recognize its origin."""
     row = s.db.execute('SELECT reference_id,status FROM project_material WHERE project_id=? AND material_id=?',
                        (pid, material_id)).fetchone()
+    note = json.dumps(dict(method=AUTOLINK_METHOD, document_id=document_id,
+                           candidate_id=candidate_id), ensure_ascii=False)
+    at = now()
     if row is not None and row['status'] == 'active':
         return row['reference_id']
-    at = now()
     if row is not None:
-        s.db.execute("UPDATE project_material SET status='active',added_at=?,added_by=?,note=NULL WHERE reference_id=?",
-                     (at, 'project-intelligence', row['reference_id']))
+        s.db.execute("UPDATE project_material SET status='active',added_at=?,added_by=?,note=? WHERE reference_id=?",
+                     (at, AUTOLINK_ACTOR, note, row['reference_id']))
         reference_id = row['reference_id']
     else:
         reference_id = s.db.execute(
             """INSERT INTO project_material(project_id,material_id,status,added_at,added_by,note)
-               VALUES(?,?,'active',?,'project-intelligence',?) RETURNING reference_id""",
-            (pid, material_id, at,
-             json.dumps(dict(method='project_document_exact_match', document_id=document_id,
-                             candidate_id=candidate_id), ensure_ascii=False))).fetchone()[0]
+               VALUES(?,?,'active',?,?,?) RETURNING reference_id""",
+            (pid, material_id, at, AUTOLINK_ACTOR, note)).fetchone()[0]
     s.db.execute('UPDATE project SET updated_at=? WHERE project_id=?', (at, pid))
     return reference_id
+
+
+def retire_unsupported_autolinks(s, document_id):
+    """Remove auto-created references whose exact evidence has vanished.
+
+    Only references this pipeline created (added_by=project-intelligence AND
+    a readable note whose method is project_document_exact_match) may ever be
+    auto-removed; anything else — manual links, uncertain provenance — is
+    left untouched. The keep/remove decision is project-wide: another
+    document's active exact candidate still supporting the same material
+    keeps the reference alive.
+    """
+    document = s.db.execute('SELECT f.project_id FROM project_document d '
+                            'JOIN project_file f USING(project_file_id) WHERE d.document_id=?',
+                            (document_id,)).fetchone()
+    if document is None:
+        return 0
+    pid = document['project_id']
+    retired = 0
+    rows = s.db.execute(
+        "SELECT reference_id, material_id, note FROM project_material"
+        " WHERE project_id=? AND status='active' AND added_by=?", (pid, AUTOLINK_ACTOR)).fetchall()
+    for row in rows:
+        try:
+            provenance = json.loads(row['note'] or '')
+        except ValueError:
+            continue  # provenance unreadable: NEVER auto remove
+        if not isinstance(provenance, dict) or provenance.get('method') != AUTOLINK_METHOD:
+            continue  # not created by document intelligence: NEVER auto remove
+        still_supported = s.db.execute(
+            "SELECT 1 FROM project_material_candidate"
+            " WHERE project_id=? AND matched_material_id=? AND match_status='exact_match'"
+            "   AND status='active' LIMIT 1", (pid, row['material_id'])).fetchone()
+        if still_supported is not None:
+            continue
+        at = now()
+        s.db.execute("UPDATE project_material SET status='removed',note=? WHERE reference_id=?",
+                     (json.dumps(dict(method=AUTOLINK_METHOD + '_no_longer_supported',
+                                      original=provenance), ensure_ascii=False), row['reference_id']))
+        audit(s.db, AUTOLINK_ACTOR, 'project.material.autounlink', 'project_material', row['reference_id'],
+              dict(project_id=pid, material_id=row['material_id'],
+                   method='project_document_exact_match_no_longer_supported',
+                   document_id=document_id, retired_from_reference=row['reference_id']))
+        s.db.execute('UPDATE project SET updated_at=? WHERE project_id=?', (at, pid))
+        retired += 1
+    return retired
 
 
 def discover(config, store, document_id, actor='project-intelligence'):
@@ -197,7 +287,7 @@ def discover(config, store, document_id, actor='project-intelligence'):
     detected = detect(units)
     at = now()
     s.db.execute('DELETE FROM project_material_candidate WHERE document_id=?', (document_id,))
-    counts = dict(candidates=0, exact_matches=0, possible_matches=0, new_candidates=0, linked=0)
+    counts = dict(candidates=0, exact_matches=0, possible_matches=0, new_candidates=0, linked=0, autounlinked=0)
     with s.db:
         for item in detected:
             unit = item['unit']
@@ -232,6 +322,14 @@ def discover(config, store, document_id, actor='project-intelligence'):
                     counts['linked'] += 1
                 finally:
                     s.project_write = None
+        # Retire this pipeline's own references that no active exact
+        # candidate still supports (project-wide, so another document's
+        # evidence keeps a shared reference alive).
+        s.project_write = dict(actor=actor, action='project.material.autounlink')
+        try:
+            counts['autounlinked'] = retire_unsupported_autolinks(s, document_id)
+        finally:
+            s.project_write = None
         summary = json.loads(document['summary_json'] or '{}')
         summary['discovery'] = counts
         s.db.execute('UPDATE project_document SET summary_json=?,updated_at=? WHERE document_id=?',

@@ -21,8 +21,11 @@ LICENSE_OCR = ('营业执照\n名称：山西中保源建设工程有限公司\n
                '法定代表人：张三\n成立日期 2016年3月2日\n经营范围 建设工程施工')
 SAFETY_OCR = ('安全生产许可证\n单位名称：山西中保源建设工程有限公司\n'
               '许可证编号：（晋）JZ安许证字[2023]B000123456\n有效期 2026-03-01')
-OTHER_COMPANY_OCR = ('营业执照\n名称：湖北某某设备制造有限公司\n统一社会信用代码：91420100MA4KXXXX9X\n法定代表人：李四')
+OTHER_COMPANY_OCR = ('营业执照\n名称：湖北某某设备制造有限公司\n统一社会信用代码：91420100MA4K00000Q\n法定代表人：李四')
 CREDIT_OCR = ('企业信用报告\n信用中国查询结果\n查询时间 2026-10-26\n报告编号 202610261234\n无严重违法记录')
+EXACT_OCR = ('安全生产许可证\n单位名称：山西中保源建设工程有限公司\n'
+             '许可证编号：JZ2023B000123456\n有效期 2026-03-01')
+ISO_NOISE = '体系认证证书\nGB/T 19001\n覆盖范围 建筑工程施工'
 PERSON_OCR = '居民身份证\n姓名：王国栋\n公民身份号码 142601199001011234\n住址 山西省临汾市'
 
 
@@ -37,7 +40,7 @@ def make_png(path, size=(420, 300), seed=7):
     return path
 
 
-def make_docx_with_images(path, texts):
+def make_docx_with_images(path, texts, extra=None):
     """Heading + intro paragraph + one image per OCR text, interleaved."""
     from docx import Document
     doc = Document()
@@ -47,6 +50,8 @@ def make_docx_with_images(path, texts):
         doc.add_paragraph(f'证明材料：{text.splitlines()[0]}')
         doc.add_picture(str(make_png(path.parent/f'img{index}.png', seed=index + 1)))
     doc.add_paragraph('以上证明文件齐全有效。')
+    for line in (extra or []):  # tail lines that differentiate file bytes
+        doc.add_paragraph(line)
     doc.save(path)
     return path
 
@@ -74,8 +79,8 @@ class FlakyOcr(SequenceOcr):
         return self.queue.pop(0) if self.queue else 'SCANNED_OCR_SENTINEL'
 
 
-class V08DocumentIntelligenceTests(DocumentFixture):
-    # ---- helpers -------------------------------------------------------
+class V08Harness(DocumentFixture):
+    """Shared harness for the phase-1 and review-fix test classes."""
     def rows(self, sql, *params):
         with Store(self.c, readonly=True) as s:
             return [dict(r) for r in s.db.execute(sql, params)]
@@ -111,6 +116,7 @@ class V08DocumentIntelligenceTests(DocumentFixture):
         Kept out; use import_material + Store.verify instead."""
         raise NotImplementedError
 
+class V08DocumentIntelligenceTests(V08Harness):
     # ---- P1: image discovery, anchors, OCR units, FTS -------------------
     def test_docx_embedded_images_anchored_ocr_units_and_fts(self):
         path = make_docx_with_images(self.base/'certs.docx', [LICENSE_OCR, SAFETY_OCR])
@@ -217,7 +223,7 @@ class V08DocumentIntelligenceTests(DocumentFixture):
         self.assertEqual(credit['lifecycle'], 'transient')
         # multi-subject: a second company's license is an equal citizen
         self.assertEqual(len(licenses), 2)
-        self.assertTrue(any(r['subject_uscc'] == '91420100MA4KXXXX9X' for r in rows))
+        self.assertTrue(any(r['subject_uscc'] == '91420100MA4K00000Q' for r in rows))
         self.assertFalse(any('jty' in json.dumps(r) or '晋铁源' in json.dumps(r, ensure_ascii=False) for r in rows))
         summary = json.loads(self.rows('SELECT summary_json FROM project_document')[0]['summary_json'] or '{}')
         self.assertEqual(summary['discovery']['candidates'], len(rows))
@@ -294,7 +300,7 @@ class V08DocumentIntelligenceTests(DocumentFixture):
                          ('possible_match', None))  # name-only is never exact
         self.assertEqual(match_library(self._FakeDb([], []), 'business_license', dict(hints, identifier=None)),
                          ('new_candidate', None))
-        self.assertEqual(match_library(self._FakeDb([1, 2]), 'business_license', hints)[0],
+        self.assertEqual(match_library(self._FakeDb([1, 2, 3]), 'business_license', hints)[0],
                          'possible_match')  # ambiguous USCC identity is an exception
 
     def test_detect_unit_filters_and_confidence(self):
@@ -349,3 +355,197 @@ class V08DocumentIntelligenceTests(DocumentFixture):
     def digest(path):
         from jty_materials.common import digest
         return digest(Path(path))
+
+
+class V08ReviewFixTests(V08Harness):
+    """Merge-gate fixes: multi-subject dedup, USCC checksum gate, stale
+    autolink retirement, transient evidence tightening."""
+
+    # ---- BLOCKER 1: dedup identity strength ladder ---------------------
+    def test_different_subjects_same_type_without_strong_id_kept(self):
+        # neither company name is extractable and no identifier exists, so
+        # both must survive on source identity: swallowing one would swallow
+        # a whole company's material
+        blind = ['管理体系认证证书\nGB/T 19001-2016\n覆盖范围 建筑工程施工',
+                 '管理体系认证证书\nGB/T 24001-2016\n覆盖范围 机电设备安装']
+        path = make_docx_with_images(self.base/'blind-iso.docx', blind)
+        fid, result, ocr = self.run_document(path, blind)
+        rows = [r for r in self.candidates() if r['candidate_type'] == 'iso_cert']
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r['subject_uscc'] is None and r['subject_name'] is None for r in rows))
+
+    def test_same_subject_normalized_name_still_dedupes(self):
+        pair = ['体系认证证书\n名称：山西甲甲建设工程有限公司\nGB/T 19001',
+                '体系认证证书\n单位名称：山西甲甲建设工程有限公司\nGB/T 24001']
+        path = make_docx_with_images(self.base/'named-iso.docx', pair)
+        fid, result, ocr = self.run_document(path, pair)
+        rows = [r for r in self.candidates() if r['candidate_type'] == 'iso_cert']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['subject_name'], '山西甲甲建设工程有限公司')
+
+    def test_strong_uscc_identity_dedup_across_pictures(self):
+        duplicate = [LICENSE_OCR, LICENSE_OCR.replace('名称：', '企业名称：')]
+        path = make_docx_with_images(self.base/'dup-license.docx', duplicate)
+        fid, result, ocr = self.run_document(path, duplicate)
+        rows = [r for r in self.candidates() if r['candidate_type'] == 'business_license'
+                and r['subject_uscc'] == '91140931MA7YM0KQ09']
+        self.assertEqual(len(rows), 1)
+
+    # ---- BLOCKER 2: USCC must pass the GB 32100-2015 checksum ---------
+    def test_uscc_checksum_gate(self):
+        from jty_materials.discovery import extract_usccs
+        self.assertEqual(extract_usccs('统一社会信用代码 91140931MA7YM0KQ09'), ['91140931MA7YM0KQ09'])
+        self.assertEqual(extract_usccs('统一社会信用代码 91140931MA7YM0KQ08'), [])  # bad check digit
+        bad = LICENSE_OCR.replace('91140931MA7YM0KQ09', '91140931MA7YM0KQ08')
+        hints = subject_hints('business_license', bad)
+        self.assertIsNone(hints['subject_uscc'])  # stays in evidence, never identity
+        path = make_docx_with_images(self.base/'bad-uscc.docx', [bad])
+        fid, result, ocr = self.run_document(path, [bad])
+        rows = [r for r in self.candidates() if r['candidate_type'] == 'business_license']
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]['subject_uscc'])
+        self.assertNotEqual(rows[0]['confidence'], 'USCC high')
+        self.assertNotIn('subject_uscc', 'high')  # confidence label sanity
+
+    def test_person_id_number_is_never_an_org_uscc(self):
+        from jty_materials.discovery import extract_usccs
+        text = '某某证明\n身份证号码 142601199001011234\n编号 14260119900101123X'
+        self.assertEqual(extract_usccs(text), [])
+        # e2e: the license picture carries a person id; org USCC stays empty
+        poisoned = LICENSE_OCR.replace('成立日期', '公民身份号码 142601199001011234\n成立日期')
+        path = make_docx_with_images(self.base/'idcard.docx', [poisoned])
+        fid, result, ocr = self.run_document(path, [poisoned])
+        row = next(r for r in self.candidates() if r['candidate_type'] == 'business_license')
+        self.assertEqual(row['subject_uscc'], '91140931MA7YM0KQ09')  # only the checksum-valid one
+        self.assertNotEqual(row['subject_uscc'], '142601199001011234')
+
+    # ---- BLOCKER 3: auto links must retire their own stale relations --
+    def _seed_exact_material(self):
+        from test_v01 import FakeOcr
+        from jty_materials.workflow import import_material
+        source = self.base/'lib-exact.pdf'; source.write_bytes(b'%PDF-lib-exact')
+        mid = import_material(self.c, source, kind='certificate', subtype='safety_prod_license',
+                              title='入库安全生产许可证', actor='fixture',
+                              ocr_factory=lambda c: FakeOcr(c, '入库素材 OCR'))['material_id']
+        with Store(self.c) as s:
+            file_id = s.db.execute("SELECT file_id FROM material_file WHERE material_id=? AND role='original'"
+                                   " AND is_current=1", (mid,)).fetchone()['file_id']
+            s.verify(mid, 'certificate_no', 'JZ2023B000123456', actor='fixture-reviewer',
+                     reason='fixture seed', evidence_file_id=file_id)
+        return mid
+
+    def _retry_with_ocr(self, fid, texts):
+        """Re-run discovery for one document with fresh OCR texts (no resume)."""
+        from jty_materials.document_extract import extract
+        SequenceOcr.queue = list(texts)
+        rid, entry = self.begin(fid, action='retry')
+        entry['resume'] = {}
+        folder = self.c.document_tmp/rid; folder.mkdir(parents=True, exist_ok=True)
+        entry['result'] = extract(entry['source'], folder/'units.jsonl', self.c,
+                                  ocr_factory=lambda _: SequenceOcr(self.c))
+        return self.supervisor.job('project.document._finish', dict(run_id=rid, capability=entry['capability']))
+
+    def _active_links(self):
+        return self.rows("SELECT * FROM project_material WHERE project_id=? AND status='active'", self.pid)
+
+    def test_autolink_retires_when_exact_evidence_disappears(self):
+        mid = self._seed_exact_material()
+        path = make_docx_with_images(self.base/'b3-one.docx', [EXACT_OCR])
+        fid, result, ocr = self.run_document(path, [EXACT_OCR])
+        self.assertEqual(len(self._active_links()), 1)
+        receipt = self._retry_with_ocr(fid, [EXACT_OCR.replace('\n许可证编号：JZ2023B000123456', '')])
+        self.assertEqual(self._active_links(), [])
+        summary = json.loads(self.rows('SELECT summary_json FROM project_document')[0]['summary_json'] or '{}')
+        self.assertEqual(summary['discovery']['autounlinked'], 1)
+        audits = self.rows("SELECT * FROM audit_log WHERE action='project.material.autounlink'")
+        self.assertEqual(len(audits), 1)
+        self.assertIn('project_document_exact_match_no_longer_supported', audits[0]['detail_json'])
+        self.assertIn('"material_id": %d' % mid, audits[0]['detail_json'].replace('  ', ' '))
+
+    def test_manual_link_is_never_auto_removed(self):
+        mid = self._seed_exact_material()
+        self.call('project.material.link', project_id=self.pid, material_id=mid)
+        path = make_docx_with_images(self.base/'b3-manual.docx', ['通用证明材料\n仅用于占用手工引用'])
+        fid, result, ocr = self.run_document(path, ['体系认证证书\nGB/T 19001'])
+        self.assertEqual(len(self._active_links()), 1)
+        self._retry_with_ocr(fid, ['体系认证证书\nGB/T 24001'])
+        links = self._active_links()
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]['added_by'], 'fixture-reviewer')
+        self.assertEqual(self.rows("SELECT * FROM audit_log WHERE action='project.material.autounlink'"), [])
+
+    def test_second_document_support_keeps_shared_link_alive(self):
+        mid = self._seed_exact_material()
+        # the two files must differ byte-wise or the second upload is a
+        # content duplicate and never becomes an independent document
+        text_b = EXACT_OCR + '\n补充说明：本证明用于投标文件附件。'
+        path_a = make_docx_with_images(self.base/'b3-doca.docx', [EXACT_OCR])
+        path_b = make_docx_with_images(self.base/'b3-docb.docx', [EXACT_OCR], extra=[text_b])
+        fid_a, _, _ = self.run_document(path_a, [EXACT_OCR])
+        fid_b, _, _ = self.run_document(path_b, [text_b])
+        self.assertNotEqual(fid_a, fid_b)
+        self.assertEqual(len(self._active_links()), 1)  # one shared reference
+        # document A's evidence vanishes; B's active exact candidate remains
+        self._retry_with_ocr(fid_a, [ISO_NOISE])
+        links = self._active_links()
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]['material_id'], mid)
+        self.assertEqual(self.rows("SELECT * FROM audit_log WHERE action='project.material.autounlink'"), [])
+
+    def test_retired_link_recovers_when_exact_evidence_returns(self):
+        self._seed_exact_material()
+        path = make_docx_with_images(self.base/'b3-return.docx', [EXACT_OCR])
+        fid, _, _ = self.run_document(path, [EXACT_OCR])
+        self._retry_with_ocr(fid, [ISO_NOISE])          # evidence gone
+        self.assertEqual(self._active_links(), [])
+        self._retry_with_ocr(fid, [EXACT_OCR])          # evidence returns
+        links = self._active_links()
+        self.assertEqual(len(links), 1)
+        note = json.loads(links[0]['note'])
+        self.assertEqual(note['method'], 'project_document_exact_match')
+        self.assertEqual(len(self.rows("SELECT * FROM audit_log WHERE action='project.material.autolink'")), 2)
+
+    # ---- BLOCKER 4: transient needs real point-in-time query evidence --
+    def test_transient_instant_query_still_transient(self):
+        instant = ('企业信用报告\n信用中国网站查询\n查询时间 2026-10-26\n查询结果 未列入严重违法名单')
+        self.assertEqual(lifecycle_for('credit_report', instant), 'transient')
+        pair_only = '企业信用报告\n查询时间 2026-10-26\n查询结果 无失信记录'
+        self.assertEqual(lifecycle_for('credit_report', pair_only), 'transient')
+
+    def test_formal_rating_report_is_not_transient(self):
+        formal = ('企业信用报告（信用评级）\n报告编号：ABC-2026-001\n生成时间：2026-10-01\n'
+                  '信用等级 AAA\n评级机构 某信用评估有限公司')
+        self.assertNotEqual(lifecycle_for('credit_report', formal), 'transient')
+        self.assertEqual(lifecycle_for('credit_report', formal), 'unknown')
+        path = make_docx_with_images(self.base/'rating.docx', [formal])
+        fid, result, ocr = self.run_document(path, [formal])
+        row = next(r for r in self.candidates() if r['candidate_type'] == 'credit_report')
+        self.assertEqual(row['lifecycle'], 'unknown')
+
+
+class V08MigrationGuardTests(DocumentFixture):
+    """Section 7 regression gate: v0.8 migration keeps every guard family."""
+
+    def test_all_trigger_guards_present_after_initialization(self):
+        with Store(self.c, readonly=True) as s:
+            names = {r[0] for r in s.db.execute(
+                "SELECT name FROM sqlite_schema WHERE type='trigger'")}
+        expected = set()
+        for table in ('project', 'project_file', 'project_material'):
+            for guard in ('no_replace', 'no_delete', 'controlled_INSERT', 'controlled_UPDATE'):
+                expected.add(f'{table}_{guard}')
+        # v0.5 attaches the status-transition guards to the two evidence
+        # tables only; the project row itself has none.
+        for table in ('project_file', 'project_material'):
+            for op in ('INSERT', 'UPDATE'):
+                expected.add(f'{table}_active_{op}')
+        expected |= {'project_identity', 'project_file_path', 'project_file_immutable',
+                     'project_material_identity'}
+        for table in ('project_document', 'project_document_run', 'project_document_unit',
+                      'project_document_image', 'project_material_candidate'):
+            for op in ('INSERT', 'UPDATE', 'DELETE'):
+                expected.add(f'controlled_{table}_{op}')
+        expected |= {'project_document_source', 'project_document_identity', 'project_document_unit_binding'}
+        expected |= {'protect_audit_log_UPDATE', 'protect_audit_log_DELETE', 'protect_audit_log_replace'}
+        missing = sorted(expected - names)
+        self.assertEqual(missing, [], 'missing trigger guards after v0.8 schema')

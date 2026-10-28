@@ -17,7 +17,8 @@ EVENTS = {'project.create': '创建项目', 'project.update': '编辑项目', 'p
           'project.document.extract': '整理文档内容', 'project.document.retry': '重试整理文档内容',
           'project.document.rebuild': '重新整理文档内容',
           'project.material.link': '引用素材', 'project.material.unlink': '取消素材引用',
-          'project.material.autolink': '自动关联素材', 'project.material.discover': '识别素材候选'}
+          'project.material.autolink': '自动关联素材', 'project.material.autounlink': '自动取消素材关联',
+          'project.material.discover': '识别素材候选'}
 
 
 def layout(config, title, content):
