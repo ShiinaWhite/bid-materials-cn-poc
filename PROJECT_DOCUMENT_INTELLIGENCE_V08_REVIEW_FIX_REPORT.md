@@ -32,7 +32,7 @@ MERGE_READY = YES（就本轮 4 个 blocker 与 §7 门而言）
 ```text
 BASE（本轮起点）            = d4fd4c3（Phase 1 功能 af2733c + 报告提交）
 REVIEW_FIX_FUNCTIONAL_HEAD  = a284a1a  fix(v0.8): resolve the four merge-gate review blockers
-REPORT_COMMIT               = 本报告自身的独立提交（见 git log 下一提交；自引用）
+REPORT_COMMIT               = c948931（本报告提交，自引用说明见 git log）
 BRANCH_TIP_AT_REPORT_PUSH   = REPORT_COMMIT（报告为分支最后一个提交后立即 push）
 ```
 
